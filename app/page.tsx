@@ -1,69 +1,243 @@
-import Image from "next/image";
+'use client';
+
+/**
+ * app/page.tsx
+ * Hackathon Pixel-Art Badge Generator
+ * Retro-digital dark brutalist split-screen layout inspired by "The Next Craft".
+ */
+
+import React, { useState } from 'react';
+import { BadgeState, ParticipantDetails, DitherConfig, BadgeTheme } from '@/types/badge';
+import { DEFAULT_DITHER_CONFIG } from '@/lib/dither';
+import ImageUploader from '@/components/ImageUploader';
+import CameraModal from '@/components/CameraModal';
+import BadgeForm from '@/components/BadgeForm';
+import BadgePreview from '@/components/BadgePreview';
+import { Terminal, Shield, Sparkles, Image as ImageIcon } from 'lucide-react';
+
+const INITIAL_PARTICIPANT: ParticipantDetails = {
+  name: 'ALEX RIVERA',
+  handle: '@arivera_dev',
+  role: 'BUILDER',
+  track: 'AGENTS & REASONING',
+  ticketNumber: '#0429',
+  qrPayload: 'https://github.com/jaime-sql/images-badges',
+  eventTitle: 'NEXT CRAFT // 2026',
+  eventDate: 'OCT 16-18, 2026',
+  location: 'SAN FRANCISCO, CA',
+};
 
 export default function Home() {
+  const [badgeState, setBadgeState] = useState<BadgeState>({
+    participant: INITIAL_PARTICIPANT,
+    dither: DEFAULT_DITHER_CONFIG,
+    theme: 'dark-brutalist',
+    rawImage: null,
+    segmentedImage: null,
+    segmentationStatus: 'idle',
+    segmentationError: null,
+  });
+
+  const [isCameraOpen, setIsCameraOpen] = useState(false);
+
+  // Participant updates
+  const handleParticipantChange = (updated: Partial<ParticipantDetails>) => {
+    setBadgeState((prev) => ({
+      ...prev,
+      participant: { ...prev.participant, ...updated },
+    }));
+  };
+
+  // Dither tuning updates
+  const handleDitherChange = (updated: Partial<DitherConfig>) => {
+    setBadgeState((prev) => ({
+      ...prev,
+      dither: { ...prev.dither, ...updated },
+    }));
+  };
+
+  // Theme updates
+  const handleThemeChange = (theme: BadgeTheme) => {
+    setBadgeState((prev) => ({
+      ...prev,
+      theme,
+    }));
+  };
+
+  // Load a built-in demo cyberpunk avatar so user can test right away
+  const loadDemoAvatar = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Procedural cyberpunk avatar
+    const grad = ctx.createLinearGradient(0, 0, 256, 256);
+    grad.addColorStop(0, '#1e293b');
+    grad.addColorStop(1, '#0f172a');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 256, 256);
+
+    // Head silhouette
+    ctx.fillStyle = '#f8fafc';
+    ctx.beginPath();
+    ctx.arc(128, 110, 60, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Cyber visor / glasses
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(80, 95, 96, 26);
+
+    // Visor glow reflection
+    ctx.fillStyle = '#38bdf8';
+    ctx.fillRect(88, 102, 35, 10);
+    ctx.fillRect(135, 102, 35, 10);
+
+    // Shoulders
+    ctx.fillStyle = '#f8fafc';
+    ctx.beginPath();
+    ctx.ellipse(128, 240, 90, 60, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tech lines
+    ctx.strokeStyle = '#0284c7';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(128, 170);
+    ctx.lineTo(128, 256);
+    ctx.stroke();
+
+    const dataUrl = canvas.toDataURL('image/png');
+    setBadgeState((prev) => ({
+      ...prev,
+      rawImage: dataUrl,
+      segmentedImage: null,
+      segmentationStatus: 'idle',
+    }));
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-[#07090e] text-zinc-100 selection:bg-emerald-500 selection:text-black">
+      {/* Top Brutalist Navigation Bar */}
+      <header className="border-b border-zinc-800 bg-[#0b0d13]/90 backdrop-blur sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-7 w-7 bg-emerald-400 flex items-center justify-center font-bold text-black font-mono text-sm">
+              NC
+            </div>
+            <div>
+              <span className="font-bold text-sm tracking-widest text-zinc-100 uppercase font-mono">
+                NEXT CRAFT // BADGE GENERATOR
+              </span>
+              <span className="hidden sm:inline-block ml-3 px-2 py-0.5 border border-emerald-500/50 bg-emerald-950/40 text-[10px] text-emerald-400 font-mono">
+                CLIENT-SIDE DITHER v1.0
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={loadDemoAvatar}
+              className="flex items-center gap-1.5 border border-zinc-700 bg-zinc-900/80 hover:border-emerald-400 px-3 py-1.5 font-mono text-xs text-zinc-300 transition"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
+              <ImageIcon className="h-3.5 w-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">LOAD DEMO AVATAR</span>
+              <span className="sm:hidden">DEMO</span>
+            </button>
+
             <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              href="https://github.com/jaime-sql/images-badges"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 border border-zinc-800 bg-black px-3 py-1.5 font-mono text-xs text-zinc-400 hover:text-white hover:border-zinc-600 transition"
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <Terminal className="h-3.5 w-3.5" />
+              GITHUB
+            </a>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
+      </header>
+
+      {/* Main Split-Screen Workspace */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          {/* Left Column: Controls and Input Panel (7 Cols) */}
+          <section className="lg:col-span-7 flex flex-col gap-6">
+            <div className="border border-zinc-800 bg-[#0a0c11] p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-emerald-400" />
+                <h1 className="font-mono text-xs font-bold tracking-widest text-zinc-200 uppercase">
+                  SECURITY CLEARANCE CONFIGURATOR
+                </h1>
+              </div>
+              <div className="flex items-center gap-2 font-mono text-[10px] text-zinc-500">
+                <span>LOCAL_PROCESSING: 100%</span>
+                <span className="text-emerald-400">●</span>
+              </div>
+            </div>
+
+            {/* Photo Acquisition */}
+            <ImageUploader
+              rawImage={badgeState.rawImage}
+              segmentedImage={badgeState.segmentedImage}
+              segmentationStatus={badgeState.segmentationStatus}
+              segmentationError={badgeState.segmentationError}
+              onRawImageChange={(url) => setBadgeState((prev) => ({ ...prev, rawImage: url }))}
+              onSegmentedImageChange={(url) =>
+                setBadgeState((prev) => ({ ...prev, segmentedImage: url }))
+              }
+              onSegmentationStatusChange={(status, error) =>
+                setBadgeState((prev) => ({
+                  ...prev,
+                  segmentationStatus: status,
+                  segmentationError: error,
+                }))
+              }
+              onOpenWebcam={() => setIsCameraOpen(true)}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+            {/* Participant Metadata & Dither Parameters */}
+            <BadgeForm
+              participant={badgeState.participant}
+              dither={badgeState.dither}
+              theme={badgeState.theme}
+              onParticipantChange={handleParticipantChange}
+              onDitherChange={handleDitherChange}
+              onThemeChange={handleThemeChange}
+            />
+          </section>
+
+          {/* Right Column: Live Badge Preview (5 Cols) */}
+          <section className="lg:col-span-5 lg:sticky lg:top-24 flex flex-col items-center">
+            <div className="w-full border border-zinc-800 bg-[#0a0c11] p-4 mb-4 flex items-center justify-between font-mono text-xs">
+              <span className="text-zinc-400 flex items-center gap-2">
+                <Sparkles className="h-3.5 w-3.5 text-emerald-400" />
+                LIVE_CANVAS_RENDER
+              </span>
+              <span className="text-[11px] text-emerald-400 border border-emerald-500/30 bg-emerald-950/20 px-2 py-0.5">
+                PIXEL_SMOOTHING: OFF
+              </span>
+            </div>
+
+            <BadgePreview badgeState={badgeState} />
+          </section>
         </div>
       </main>
+
+      {/* Webcam Modal */}
+      <CameraModal
+        isOpen={isCameraOpen}
+        onClose={() => setIsCameraOpen(false)}
+        onCapture={(dataUrl) => {
+          setBadgeState((prev) => ({
+            ...prev,
+            rawImage: dataUrl,
+            segmentedImage: null,
+            segmentationStatus: 'idle',
+          }));
+        }}
+      />
     </div>
   );
 }
