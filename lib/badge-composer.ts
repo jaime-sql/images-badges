@@ -249,10 +249,28 @@ export async function renderBadgeToCanvas(
   const portraitX = (BADGE_WIDTH - portraitSize) / 2;
   const portraitY = 145;
 
-  // Viewport Frame background
+  // Viewport Frame background (subtle tech grid provides silhouette contrast for dark hair)
   ctx.save();
-  ctx.fillStyle = '#06070a';
+  ctx.fillStyle = '#0b0f19';
   ctx.fillRect(portraitX, portraitY, portraitSize, portraitSize);
+
+  // Subtle portrait backing grid
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+  ctx.lineWidth = 1;
+  const pGrid = 20;
+  for (let px = portraitX; px <= portraitX + portraitSize; px += pGrid) {
+    ctx.beginPath();
+    ctx.moveTo(px, portraitY);
+    ctx.lineTo(px, portraitY + portraitSize);
+    ctx.stroke();
+  }
+  for (let py = portraitY; py <= portraitY + portraitSize; py += pGrid) {
+    ctx.beginPath();
+    ctx.moveTo(portraitX, py);
+    ctx.lineTo(portraitX + portraitSize, py);
+    ctx.stroke();
+  }
+
   ctx.strokeStyle = theme.border;
   ctx.lineWidth = 2;
   ctx.strokeRect(portraitX, portraitY, portraitSize, portraitSize);
@@ -288,17 +306,30 @@ export async function renderBadgeToCanvas(
   // 7. Participant Primary Details
   const detailsY = portraitY + portraitSize + 48;
 
-  // Name
+  // Name: Render user-entered name or clear prompt
   ctx.save();
-  ctx.fillStyle = theme.foreground;
-  ctx.font = '900 32px "Geist Mono", sans-serif';
-  const nameDisplay = participant.name || 'HACKER_NAME';
-  ctx.fillText(nameDisplay.toUpperCase(), 40, detailsY);
+  const nameTrimmed = (participant.name || '').trim();
+  if (nameTrimmed) {
+    ctx.fillStyle = theme.foreground;
+    ctx.font = '900 30px "Geist Mono", sans-serif';
+    ctx.fillText(nameTrimmed.toUpperCase(), 40, detailsY);
+  } else {
+    ctx.fillStyle = theme.muted;
+    ctx.font = '700 22px "Geist Mono", monospace';
+    ctx.fillText('[ ENTER YOUR NAME ]', 40, detailsY);
+  }
 
   // Handle & Track
-  ctx.fillStyle = theme.accent;
-  ctx.font = '600 16px "Geist Mono", monospace';
-  ctx.fillText(participant.handle || '@builder', 40, detailsY + 28);
+  const handleTrimmed = (participant.handle || '').trim();
+  if (handleTrimmed) {
+    ctx.fillStyle = theme.accent;
+    ctx.font = '600 15px "Geist Mono", monospace';
+    ctx.fillText(handleTrimmed.startsWith('@') ? handleTrimmed : `@${handleTrimmed}`, 40, detailsY + 28);
+  } else {
+    ctx.fillStyle = theme.muted;
+    ctx.font = '500 13px "Geist Mono", monospace';
+    ctx.fillText('@YOUR_HANDLE', 40, detailsY + 28);
+  }
 
   ctx.fillStyle = theme.muted;
   ctx.font = '13px "Geist Mono", monospace';

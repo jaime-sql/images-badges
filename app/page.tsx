@@ -16,8 +16,8 @@ import BadgePreview from '@/components/BadgePreview';
 import { Terminal, Shield, Sparkles, Image as ImageIcon } from 'lucide-react';
 
 const INITIAL_PARTICIPANT: ParticipantDetails = {
-  name: 'ALEX RIVERA',
-  handle: '@arivera_dev',
+  name: '',
+  handle: '',
   role: 'BUILDER',
   track: 'AGENTS & REASONING',
   ticketNumber: '#0429',
@@ -114,6 +114,11 @@ export default function Home() {
       rawImage: dataUrl,
       segmentedImage: null,
       segmentationStatus: 'idle',
+      participant: {
+        ...prev.participant,
+        name: prev.participant.name || 'SATOSHI N.',
+        handle: prev.participant.handle || '@satoshin',
+      },
     }));
   };
 

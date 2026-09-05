@@ -5,12 +5,14 @@
  * 
  * Features:
  * - High-precision luminance calculation (ITU-R BT.601)
- * - Contrast, brightness, and inversion pre-filtering
+ * - Smart Adaptive Auto-Exposure / Facial Dynamic Range Normalization
+ * - Pre-dither Unsharp Masking for crisp glasses, eyes, and contours
+ * - Serpentine (boustrophedon) Floyd-Steinberg error diffusion
+ * - Atkinson dithering (legendary retro Macintosh high-contrast style)
+ * - Stucki 12-neighbor error diffusion (photographic smooth stippling)
+ * - Bayer 4x4 & 8x8 ordered matrix dithering
+ * - Contrast, brightness, and gamma midtone lift controls
  * - 4-Level Grayscale Quantization & Custom Palette mapping
- * - Floyd-Steinberg 4-level error diffusion
- * - Atkinson error diffusion (retro Macintosh style)
- * - Bayer 4x4 / 8x8 ordered dithering
- * - Pure-function downsampling / box-sampling for pixel grid preservation
  * - Alpha transparency preservation for background-removed portraits
  */
 
@@ -64,16 +66,22 @@ export const PRESET_PALETTES: Record<string, DitherPaletteColor[]> = {
 };
 
 /**
- * Default tuning configuration for hackathon badges
+ * Default tuning configuration for hackathon badges:
+ * Neutral contrast & brightness + auto-exposure ON ensures
+ * facial contours (glasses, eyes, beard) are never crushed to black.
  */
 export const DEFAULT_DITHER_CONFIG: DitherConfig = {
-  resolution: 128,
+  resolution: 180, // Crisp 2x integer scale to 360px portrait frame
   levels: 4,
   algorithm: 'floyd-steinberg',
-  contrast: 0.2,
-  brightness: 0.05,
-  diffusionStrength: 0.95,
+  contrast: 0.0,
+  brightness: 0.0,
+  diffusionStrength: 0.88,
   invert: false,
+  autoEnhance: true,
+  gamma: 1.0,
+  sharpness: 0.35,
+  serpentine: true,
 };
 
 /**
@@ -84,6 +92,20 @@ const BAYER_4X4 = [
   [12 / 16,  4 / 16, 14 / 16,  6 / 16],
   [ 3 / 16, 11 / 16,  1 / 16,  9 / 16],
   [15 / 16,  7 / 16, 13 / 16,  5 / 16],
+];
+
+/**
+ * Bayer 8x8 matrix for fine-grained ordered dithering
+ */
+const BAYER_8X8 = [
+  [ 0/64, 32/64,  8/64, 40/64,  2/64, 34/64, 10/64, 42/64],
+  [48/64, 16/64, 56/64, 24/64, 50/64, 18/64, 58/64, 26/64],
+  [12/64, 44/64,  4/64, 36/64, 14/64, 46/64,  6/64, 38/64],
+  [60/64, 28/64, 52/64, 20/64, 62/64, 30/64, 54/64, 22/64],
+  [ 3/64, 35/64, 11/64, 43/64,  1/64, 33/64,  9/64, 41/64],
+  [51/64, 19/64, 59/64, 27/64, 49/64, 17/64, 57/64, 25/64],
+  [15/64, 47/64,  7/64, 39/64, 13/64, 45/64,  5/64, 37/64],
+  [63/64, 31/64, 55/64, 23/64, 61/64, 29/64, 53/64, 21/64],
 ];
 
 /**
@@ -104,11 +126,6 @@ export function clamp(val: number, min = 0, max = 255): number {
 
 /**
  * Pre-process luminance with contrast, brightness, and inversion curves
- * 
- * @param lum Base luminance in [0, 255]
- * @param contrast Contrast factor (-1.0 to 1.0, 0 is neutral)
- * @param brightness Brightness factor (-1.0 to 1.0, 0 is neutral)
- * @param invert Whether to invert luminance
  */
 export function adjustLuminance(
   lum: number,
@@ -116,12 +133,18 @@ export function adjustLuminance(
   brightness = 0,
   invert = false
 ): number {
+  let v = lum;
+
   // 1. Contrast adjustment centered at mid-gray 128
-  const factor = (1.015 * (contrast + 1)) / (1.015 - contrast);
-  let v = factor * (lum - 128) + 128;
+  if (contrast !== 0) {
+    const factor = (1.015 * (contrast + 1)) / (1.015 - contrast);
+    v = factor * (v - 128) + 128;
+  }
 
   // 2. Brightness adjustment
-  v += brightness * 255;
+  if (brightness !== 0) {
+    v += brightness * 255;
+  }
 
   // 3. Clamp
   v = Math.max(0, Math.min(255, v));
@@ -137,8 +160,6 @@ export function adjustLuminance(
 /**
  * Quantize a continuous value in [0, 255] into N evenly spaced levels.
  * For 4 levels: 0 (0), 1 (85), 2 (170), 3 (255).
- * 
- * Returns quantized value, level index, and quantization error.
  */
 export function quantizeLevels(
   value: number,
@@ -169,7 +190,6 @@ export function getPaletteColorForIndex(
   if (palette.length === levels) {
     return palette[index];
   }
-  // If palette length differs, interpolate or map proportionally
   const ratio = index / (levels - 1);
   const paletteIndex = Math.min(
     palette.length - 1,
@@ -179,7 +199,7 @@ export function getPaletteColorForIndex(
 }
 
 /**
- * Helper to safely construct ImageData in browser and test/worker environments
+ * Helper to safely construct ImageData in browser and worker environments
  */
 export function createImageData(
   data: Uint8ClampedArray,
@@ -187,7 +207,7 @@ export function createImageData(
   height: number
 ): ImageData {
   if (typeof ImageData !== 'undefined') {
-    return new ImageData(data as unknown as ImageDataArray, width, height);
+    return new ImageData(data as unknown as Uint8ClampedArray<ArrayBuffer>, width, height);
   }
   return {
     data,
@@ -198,72 +218,130 @@ export function createImageData(
 }
 
 /**
- * Downsample an ImageData to target dimensions (targetW, targetH)
- * using area-averaging (box filter) for sharp pixel boundaries.
+ * Pre-filter & prepare luminance buffer:
+ * - Computes adaptive dynamic range expansion (auto-exposure) so facial skin tones
+ *   land cleanly in the active 4-level stipple range instead of getting crushed into solid black.
+ * - Applies unsharp mask for glasses rims and eye outlines.
+ * - Applies user contrast, brightness, and gamma.
  */
-export function downsampleImageData(
+export function prepareLuminanceBuffer(
   source: ImageData,
-  targetW: number,
-  targetH: number
-): ImageData {
-  const srcW = source.width;
-  const srcH = source.height;
-  const srcData = source.data;
+  config: Partial<DitherConfig> = {}
+): { lumBuffer: Float32Array; alphaBuffer: Uint8Array; w: number; h: number } {
+  const {
+    contrast = 0,
+    brightness = 0,
+    invert = false,
+    autoEnhance = true,
+    gamma = 1.0,
+    sharpness = 0.35,
+  } = config;
 
-  // Create output buffer (in browser environment, create via Canvas or ImageData constructor)
-  // In pure JS: Uint8ClampedArray
-  const outData = new Uint8ClampedArray(targetW * targetH * 4);
+  const w = source.width;
+  const h = source.height;
+  const src = source.data;
 
-  const xRatio = srcW / targetW;
-  const yRatio = srcH / targetH;
+  const rawLum = new Float32Array(w * h);
+  const alphaBuffer = new Uint8Array(w * h);
 
-  for (let dy = 0; dy < targetH; dy++) {
-    const srcYStart = Math.floor(dy * yRatio);
-    const srcYEnd = Math.min(srcH, Math.floor((dy + 1) * yRatio));
-    const sampleH = Math.max(1, srcYEnd - srcYStart);
+  // 1. Extract raw luminance and alpha
+  for (let i = 0; i < w * h; i++) {
+    const idx = i * 4;
+    rawLum[i] = getLuminance(src[idx], src[idx + 1], src[idx + 2]);
+    alphaBuffer[i] = src[idx + 3];
+  }
 
-    for (let dx = 0; dx < targetW; dx++) {
-      const srcXStart = Math.floor(dx * xRatio);
-      const srcXEnd = Math.min(srcW, Math.floor((dx + 1) * xRatio));
-      const sampleW = Math.max(1, srcXEnd - srcXStart);
-      const totalPixels = sampleW * sampleH;
+  // 2. Adaptive Auto-Exposure / Facial Dynamic Range Normalization
+  const processedLum = new Float32Array(w * h);
 
-      let rSum = 0;
-      let gSum = 0;
-      let bSum = 0;
-      let aSum = 0;
-
-      for (let sy = srcYStart; sy < srcYEnd; sy++) {
-        const rowOffset = sy * srcW * 4;
-        for (let sx = srcXStart; sx < srcXEnd; sx++) {
-          const idx = rowOffset + (sx * 4);
-          rSum += srcData[idx];
-          gSum += srcData[idx + 1];
-          bSum += srcData[idx + 2];
-          aSum += srcData[idx + 3];
-        }
+  if (autoEnhance) {
+    // Collect foreground samples (alpha >= 20)
+    const samples: number[] = [];
+    for (let i = 0; i < w * h; i++) {
+      if (alphaBuffer[i] >= 20) {
+        samples.push(rawLum[i]);
       }
+    }
 
-      const dstIdx = (dy * targetW + dx) * 4;
-      outData[dstIdx] = Math.round(rSum / totalPixels);
-      outData[dstIdx + 1] = Math.round(gSum / totalPixels);
-      outData[dstIdx + 2] = Math.round(bSum / totalPixels);
-      outData[dstIdx + 3] = Math.round(aSum / totalPixels);
+    const sampleList = samples.length >= (w * h * 0.05) ? samples : Array.from(rawLum);
+    sampleList.sort((a, b) => a - b);
+
+    // 2nd and 98th percentile anchors
+    const pLowIdx = Math.floor(sampleList.length * 0.02);
+    const pHighIdx = Math.floor(sampleList.length * 0.98);
+    const medianIdx = Math.floor(sampleList.length * 0.5);
+
+    const low = sampleList[pLowIdx] ?? 0;
+    const high = sampleList[pHighIdx] ?? 255;
+    const median = sampleList[medianIdx] ?? 128;
+    const range = Math.max(15, high - low);
+
+    // Target midtone around 0.52 (~133/255) ensures skin tones stipple beautifully
+    const normMedian = Math.max(0.05, Math.min(0.95, (median - low) / range));
+    const targetMid = 0.52;
+    const adaptGamma = Math.max(0.45, Math.min(1.4, Math.log(targetMid) / Math.log(normMedian)));
+    const finalGamma = adaptGamma * (gamma > 0 ? gamma : 1.0);
+
+    for (let i = 0; i < w * h; i++) {
+      if (alphaBuffer[i] < 20) {
+        processedLum[i] = 0;
+        continue;
+      }
+      const norm = Math.max(0, Math.min(1, (rawLum[i] - low) / range));
+      processedLum[i] = Math.pow(norm, finalGamma) * 255;
+    }
+  } else {
+    const effectiveGamma = gamma > 0 ? gamma : 1.0;
+    for (let i = 0; i < w * h; i++) {
+      if (alphaBuffer[i] < 20) {
+        processedLum[i] = 0;
+        continue;
+      }
+      const norm = Math.max(0, Math.min(1, rawLum[i] / 255));
+      processedLum[i] = Math.pow(norm, effectiveGamma) * 255;
     }
   }
 
-  return createImageData(outData, targetW, targetH);
+  // 3. Pre-Dither Unsharp Masking (Enhances glasses rims, pupils, nose bridge, beard lines)
+  const finalBuffer = new Float32Array(w * h);
+  if (sharpness && sharpness > 0) {
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        const idx = row + x;
+        if (alphaBuffer[idx] < 20) {
+          finalBuffer[idx] = 0;
+          continue;
+        }
+
+        const center = processedLum[idx];
+        const left = x > 0 ? processedLum[idx - 1] : center;
+        const right = x < w - 1 ? processedLum[idx + 1] : center;
+        const up = y > 0 ? processedLum[idx - w] : center;
+        const down = y < h - 1 ? processedLum[idx + w] : center;
+
+        const avgSurrounding = (left + right + up + down) / 4;
+        const sharpVal = center + sharpness * (center - avgSurrounding);
+        const clampedLum = Math.max(0, Math.min(255, sharpVal));
+
+        finalBuffer[idx] = adjustLuminance(clampedLum, contrast, brightness, invert);
+      }
+    }
+  } else {
+    for (let i = 0; i < w * h; i++) {
+      if (alphaBuffer[i] < 20) {
+        finalBuffer[i] = 0;
+      } else {
+        finalBuffer[i] = adjustLuminance(processedLum[i], contrast, brightness, invert);
+      }
+    }
+  }
+
+  return { lumBuffer: finalBuffer, alphaBuffer, w, h };
 }
 
 /**
- * Floyd-Steinberg 4-level error diffusion dithering.
- * 
- * Error distribution weights:
- *       [ * ]  7/16
- * 3/16  5/16   1/16
- * 
- * Works with arbitrary quantization levels (default 4) and custom palettes.
- * Handles alpha transparency cleanly so background-removed portraits retain crisp silhouettes.
+ * Floyd-Steinberg 4-level error diffusion dithering with Serpentine scanning.
  */
 export function applyFloydSteinbergDither(
   source: ImageData,
@@ -271,51 +349,29 @@ export function applyFloydSteinbergDither(
 ): ImageData {
   const {
     levels = 4,
-    contrast = 0,
-    brightness = 0,
-    diffusionStrength = 1.0,
-    invert = false,
+    diffusionStrength = 0.88,
+    serpentine = true,
     customPalette = FOUR_LEVEL_GRAYSCALE,
   } = config;
 
-  const w = source.width;
-  const h = source.height;
-  const src = source.data;
-
-  // Extract luminance matrix & alpha into a floating-point 2D buffer to accumulate diffusion errors
-  const lumBuffer = new Float32Array(w * h);
-  const alphaBuffer = new Uint8Array(w * h);
-
-  for (let y = 0; y < h; y++) {
-    const rowOffset = y * w;
-    for (let x = 0; x < w; x++) {
-      const idx = (rowOffset + x) * 4;
-      const r = src[idx];
-      const g = src[idx + 1];
-      const b = src[idx + 2];
-      const a = src[idx + 3];
-
-      const lum = getLuminance(r, g, b);
-      lumBuffer[rowOffset + x] = adjustLuminance(lum, contrast, brightness, invert);
-      alphaBuffer[rowOffset + x] = a;
-    }
-  }
-
-  // Destination pixel array
+  const { lumBuffer, alphaBuffer, w, h } = prepareLuminanceBuffer(source, config);
   const outputData = new Uint8ClampedArray(w * h * 4);
 
-  // Floyd-Steinberg diffusion weights
   const wRight = (7 / 16) * diffusionStrength;
   const wDownLeft = (3 / 16) * diffusionStrength;
   const wDown = (5 / 16) * diffusionStrength;
   const wDownRight = (1 / 16) * diffusionStrength;
 
   for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
+    const isOddRow = serpentine && (y % 2 === 1);
+    const startX = isOddRow ? w - 1 : 0;
+    const endX = isOddRow ? -1 : w;
+    const stepX = isOddRow ? -1 : 1;
+
+    for (let x = startX; x !== endX; x += stepX) {
       const offset = y * w + x;
       const alpha = alphaBuffer[offset];
 
-      // If pixel is fully transparent from background removal, preserve transparency
       if (alpha < 20) {
         const dstIdx = offset * 4;
         outputData[dstIdx] = 0;
@@ -328,7 +384,6 @@ export function applyFloydSteinbergDither(
       const currentLum = Math.max(0, Math.min(255, lumBuffer[offset]));
       const { index, error } = quantizeLevels(currentLum, levels);
 
-      // Select palette color
       const color = getPaletteColorForIndex(index, levels, customPalette);
       const dstIdx = offset * 4;
       outputData[dstIdx] = color.r;
@@ -336,20 +391,39 @@ export function applyFloydSteinbergDither(
       outputData[dstIdx + 2] = color.b;
       outputData[dstIdx + 3] = color.a ?? alpha;
 
-      // Diffuse quantization error to neighbors within bounds
-      if (x + 1 < w && alphaBuffer[offset + 1] >= 20) {
-        lumBuffer[offset + 1] += error * wRight;
-      }
-      if (y + 1 < h) {
-        const nextRowOffset = (y + 1) * w;
-        if (x - 1 >= 0 && alphaBuffer[nextRowOffset + (x - 1)] >= 20) {
-          lumBuffer[nextRowOffset + (x - 1)] += error * wDownLeft;
+      if (!isOddRow) {
+        // Left to right diffusion
+        if (x + 1 < w && alphaBuffer[offset + 1] >= 20) {
+          lumBuffer[offset + 1] += error * wRight;
         }
-        if (alphaBuffer[nextRowOffset + x] >= 20) {
-          lumBuffer[nextRowOffset + x] += error * wDown;
+        if (y + 1 < h) {
+          const nextRow = (y + 1) * w;
+          if (x - 1 >= 0 && alphaBuffer[nextRow + (x - 1)] >= 20) {
+            lumBuffer[nextRow + (x - 1)] += error * wDownLeft;
+          }
+          if (alphaBuffer[nextRow + x] >= 20) {
+            lumBuffer[nextRow + x] += error * wDown;
+          }
+          if (x + 1 < w && alphaBuffer[nextRow + (x + 1)] >= 20) {
+            lumBuffer[nextRow + (x + 1)] += error * wDownRight;
+          }
         }
-        if (x + 1 < w && alphaBuffer[nextRowOffset + (x + 1)] >= 20) {
-          lumBuffer[nextRowOffset + (x + 1)] += error * wDownRight;
+      } else {
+        // Right to left diffusion (Serpentine)
+        if (x - 1 >= 0 && alphaBuffer[offset - 1] >= 20) {
+          lumBuffer[offset - 1] += error * wRight;
+        }
+        if (y + 1 < h) {
+          const nextRow = (y + 1) * w;
+          if (x + 1 < w && alphaBuffer[nextRow + (x + 1)] >= 20) {
+            lumBuffer[nextRow + (x + 1)] += error * wDownLeft;
+          }
+          if (alphaBuffer[nextRow + x] >= 20) {
+            lumBuffer[nextRow + x] += error * wDown;
+          }
+          if (x - 1 >= 0 && alphaBuffer[nextRow + (x - 1)] >= 20) {
+            lumBuffer[nextRow + (x - 1)] += error * wDownRight;
+          }
         }
       }
     }
@@ -359,12 +433,7 @@ export function applyFloydSteinbergDither(
 }
 
 /**
- * Atkinson Dithering algorithm.
- * Diffuses only 3/4 of the error across 6 neighbors:
- *       [ * ]  1/8  1/8
- *  1/8   1/8   1/8
- *        1/8
- * Result: Distinct high-contrast retro Macintosh aesthetic.
+ * Atkinson Dithering algorithm (Classic Macintosh high-contrast aesthetic).
  */
 export function applyAtkinsonDither(
   source: ImageData,
@@ -372,35 +441,11 @@ export function applyAtkinsonDither(
 ): ImageData {
   const {
     levels = 4,
-    contrast = 0,
-    brightness = 0,
     diffusionStrength = 1.0,
-    invert = false,
     customPalette = FOUR_LEVEL_GRAYSCALE,
   } = config;
 
-  const w = source.width;
-  const h = source.height;
-  const src = source.data;
-
-  const lumBuffer = new Float32Array(w * h);
-  const alphaBuffer = new Uint8Array(w * h);
-
-  for (let y = 0; y < h; y++) {
-    const rowOffset = y * w;
-    for (let x = 0; x < w; x++) {
-      const idx = (rowOffset + x) * 4;
-      const r = src[idx];
-      const g = src[idx + 1];
-      const b = src[idx + 2];
-      const a = src[idx + 3];
-
-      const lum = getLuminance(r, g, b);
-      lumBuffer[rowOffset + x] = adjustLuminance(lum, contrast, brightness, invert);
-      alphaBuffer[rowOffset + x] = a;
-    }
-  }
-
+  const { lumBuffer, alphaBuffer, w, h } = prepareLuminanceBuffer(source, config);
   const outputData = new Uint8ClampedArray(w * h * 4);
   const weight = (1 / 8) * diffusionStrength;
 
@@ -430,7 +475,6 @@ export function applyAtkinsonDither(
 
       const spread = error * weight;
 
-      // Atkinson offsets: (+1, 0), (+2, 0), (-1, +1), (0, +1), (+1, +1), (0, +2)
       if (x + 1 < w && alphaBuffer[offset + 1] >= 20) lumBuffer[offset + 1] += spread;
       if (x + 2 < w && alphaBuffer[offset + 2] >= 20) lumBuffer[offset + 2] += spread;
 
@@ -452,8 +496,79 @@ export function applyAtkinsonDither(
 }
 
 /**
- * Ordered Dithering using a 4x4 Bayer matrix.
- * Provides a structured, CRT dot-matrix style pattern.
+ * Stucki Error Diffusion Dithering (12-neighbor smooth photographic stippling).
+ */
+export function applyStuckiDither(
+  source: ImageData,
+  config: Partial<DitherConfig> = {}
+): ImageData {
+  const {
+    levels = 4,
+    diffusionStrength = 0.88,
+    customPalette = FOUR_LEVEL_GRAYSCALE,
+  } = config;
+
+  const { lumBuffer, alphaBuffer, w, h } = prepareLuminanceBuffer(source, config);
+  const outputData = new Uint8ClampedArray(w * h * 4);
+
+  const d = 42;
+  const s = diffusionStrength;
+
+  for (let y = 0; y < h; y++) {
+    const rowOffset = y * w;
+    for (let x = 0; x < w; x++) {
+      const offset = rowOffset + x;
+      const alpha = alphaBuffer[offset];
+
+      if (alpha < 20) {
+        const dstIdx = offset * 4;
+        outputData[dstIdx] = 0;
+        outputData[dstIdx + 1] = 0;
+        outputData[dstIdx + 2] = 0;
+        outputData[dstIdx + 3] = 0;
+        continue;
+      }
+
+      const currentLum = Math.max(0, Math.min(255, lumBuffer[offset]));
+      const { index, error } = quantizeLevels(currentLum, levels);
+
+      const color = getPaletteColorForIndex(index, levels, customPalette);
+      const dstIdx = offset * 4;
+      outputData[dstIdx] = color.r;
+      outputData[dstIdx + 1] = color.g;
+      outputData[dstIdx + 2] = color.b;
+      outputData[dstIdx + 3] = color.a ?? alpha;
+
+      const err = error * s;
+
+      if (x + 1 < w && alphaBuffer[offset + 1] >= 20) lumBuffer[offset + 1] += (err * 8) / d;
+      if (x + 2 < w && alphaBuffer[offset + 2] >= 20) lumBuffer[offset + 2] += (err * 4) / d;
+
+      if (y + 1 < h) {
+        const r1 = (y + 1) * w;
+        if (x - 2 >= 0 && alphaBuffer[r1 + (x - 2)] >= 20) lumBuffer[r1 + (x - 2)] += (err * 2) / d;
+        if (x - 1 >= 0 && alphaBuffer[r1 + (x - 1)] >= 20) lumBuffer[r1 + (x - 1)] += (err * 4) / d;
+        if (alphaBuffer[r1 + x] >= 20) lumBuffer[r1 + x] += (err * 8) / d;
+        if (x + 1 < w && alphaBuffer[r1 + (x + 1)] >= 20) lumBuffer[r1 + (x + 1)] += (err * 4) / d;
+        if (x + 2 < w && alphaBuffer[r1 + (x + 2)] >= 20) lumBuffer[r1 + (x + 2)] += (err * 2) / d;
+      }
+
+      if (y + 2 < h) {
+        const r2 = (y + 2) * w;
+        if (x - 2 >= 0 && alphaBuffer[r2 + (x - 2)] >= 20) lumBuffer[r2 + (x - 2)] += (err * 1) / d;
+        if (x - 1 >= 0 && alphaBuffer[r2 + (x - 1)] >= 20) lumBuffer[r2 + (x - 1)] += (err * 2) / d;
+        if (alphaBuffer[r2 + x] >= 20) lumBuffer[r2 + x] += (err * 4) / d;
+        if (x + 1 < w && alphaBuffer[r2 + (x + 1)] >= 20) lumBuffer[r2 + (x + 1)] += (err * 2) / d;
+        if (x + 2 < w && alphaBuffer[r2 + (x + 2)] >= 20) lumBuffer[r2 + (x + 2)] += (err * 1) / d;
+      }
+    }
+  }
+
+  return createImageData(outputData, w, h);
+}
+
+/**
+ * Ordered Dithering using 4x4 Bayer Matrix
  */
 export function applyBayerDither(
   source: ImageData,
@@ -461,48 +576,91 @@ export function applyBayerDither(
 ): ImageData {
   const {
     levels = 4,
-    contrast = 0,
-    brightness = 0,
     diffusionStrength = 1.0,
-    invert = false,
     customPalette = FOUR_LEVEL_GRAYSCALE,
   } = config;
 
-  const w = source.width;
-  const h = source.height;
-  const src = source.data;
+  const { lumBuffer, alphaBuffer, w, h } = prepareLuminanceBuffer(source, config);
   const outputData = new Uint8ClampedArray(w * h * 4);
-
   const stepSize = 255 / (levels - 1);
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const idx = (y * w + x) * 4;
-      const alpha = src[idx + 3];
+      const idx = y * w + x;
+      const alpha = alphaBuffer[idx];
 
       if (alpha < 20) {
-        outputData[idx] = 0;
-        outputData[idx + 1] = 0;
-        outputData[idx + 2] = 0;
-        outputData[idx + 3] = 0;
+        const dstIdx = idx * 4;
+        outputData[dstIdx] = 0;
+        outputData[dstIdx + 1] = 0;
+        outputData[dstIdx + 2] = 0;
+        outputData[dstIdx + 3] = 0;
         continue;
       }
 
-      const lum = getLuminance(src[idx], src[idx + 1], src[idx + 2]);
-      const adjusted = adjustLuminance(lum, contrast, brightness, invert);
-
-      // Bayer threshold offset: matrix value is in [0, 1) -> center around 0
+      const lum = lumBuffer[idx];
       const bayerVal = BAYER_4X4[y % 4][x % 4];
       const thresholdOffset = (bayerVal - 0.5) * stepSize * diffusionStrength;
-      const perturbed = Math.max(0, Math.min(255, adjusted + thresholdOffset));
+      const perturbed = Math.max(0, Math.min(255, lum + thresholdOffset));
 
       const { index } = quantizeLevels(perturbed, levels);
       const color = getPaletteColorForIndex(index, levels, customPalette);
 
-      outputData[idx] = color.r;
-      outputData[idx + 1] = color.g;
-      outputData[idx + 2] = color.b;
-      outputData[idx + 3] = color.a ?? alpha;
+      const dstIdx = idx * 4;
+      outputData[dstIdx] = color.r;
+      outputData[dstIdx + 1] = color.g;
+      outputData[dstIdx + 2] = color.b;
+      outputData[dstIdx + 3] = color.a ?? alpha;
+    }
+  }
+
+  return createImageData(outputData, w, h);
+}
+
+/**
+ * Ordered Dithering using 8x8 Bayer Matrix (Fine pattern)
+ */
+export function applyBayer8Dither(
+  source: ImageData,
+  config: Partial<DitherConfig> = {}
+): ImageData {
+  const {
+    levels = 4,
+    diffusionStrength = 1.0,
+    customPalette = FOUR_LEVEL_GRAYSCALE,
+  } = config;
+
+  const { lumBuffer, alphaBuffer, w, h } = prepareLuminanceBuffer(source, config);
+  const outputData = new Uint8ClampedArray(w * h * 4);
+  const stepSize = 255 / (levels - 1);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = y * w + x;
+      const alpha = alphaBuffer[idx];
+
+      if (alpha < 20) {
+        const dstIdx = idx * 4;
+        outputData[dstIdx] = 0;
+        outputData[dstIdx + 1] = 0;
+        outputData[dstIdx + 2] = 0;
+        outputData[dstIdx + 3] = 0;
+        continue;
+      }
+
+      const lum = lumBuffer[idx];
+      const bayerVal = BAYER_8X8[y % 8][x % 8];
+      const thresholdOffset = (bayerVal - 0.5) * stepSize * diffusionStrength;
+      const perturbed = Math.max(0, Math.min(255, lum + thresholdOffset));
+
+      const { index } = quantizeLevels(perturbed, levels);
+      const color = getPaletteColorForIndex(index, levels, customPalette);
+
+      const dstIdx = idx * 4;
+      outputData[dstIdx] = color.r;
+      outputData[dstIdx + 1] = color.g;
+      outputData[dstIdx + 2] = color.b;
+      outputData[dstIdx + 3] = color.a ?? alpha;
     }
   }
 
@@ -518,36 +676,32 @@ export function applyThresholdDither(
 ): ImageData {
   const {
     levels = 4,
-    contrast = 0,
-    brightness = 0,
-    invert = false,
     customPalette = FOUR_LEVEL_GRAYSCALE,
   } = config;
 
-  const w = source.width;
-  const h = source.height;
-  const src = source.data;
+  const { lumBuffer, alphaBuffer, w, h } = prepareLuminanceBuffer(source, config);
   const outputData = new Uint8ClampedArray(w * h * 4);
 
-  for (let i = 0; i < src.length; i += 4) {
-    const alpha = src[i + 3];
+  for (let i = 0; i < w * h; i++) {
+    const alpha = alphaBuffer[i];
     if (alpha < 20) {
-      outputData[i] = 0;
-      outputData[i + 1] = 0;
-      outputData[i + 2] = 0;
-      outputData[i + 3] = 0;
+      const dstIdx = i * 4;
+      outputData[dstIdx] = 0;
+      outputData[dstIdx + 1] = 0;
+      outputData[dstIdx + 2] = 0;
+      outputData[dstIdx + 3] = 0;
       continue;
     }
 
-    const lum = getLuminance(src[i], src[i + 1], src[i + 2]);
-    const adjusted = adjustLuminance(lum, contrast, brightness, invert);
-    const { index } = quantizeLevels(adjusted, levels);
+    const lum = lumBuffer[i];
+    const { index } = quantizeLevels(lum, levels);
     const color = getPaletteColorForIndex(index, levels, customPalette);
 
-    outputData[i] = color.r;
-    outputData[i + 1] = color.g;
-    outputData[i + 2] = color.b;
-    outputData[i + 3] = color.a ?? alpha;
+    const dstIdx = i * 4;
+    outputData[dstIdx] = color.r;
+    outputData[dstIdx + 1] = color.g;
+    outputData[dstIdx + 2] = color.b;
+    outputData[dstIdx + 3] = color.a ?? alpha;
   }
 
   return createImageData(outputData, w, h);
@@ -567,6 +721,10 @@ export function ditherImageData(
       return applyAtkinsonDither(source, config);
     case 'bayer':
       return applyBayerDither(source, config);
+    case 'bayer8':
+      return applyBayer8Dither(source, config);
+    case 'stucki':
+      return applyStuckiDither(source, config);
     case 'threshold':
       return applyThresholdDither(source, config);
     case 'floyd-steinberg':
@@ -576,12 +734,7 @@ export function ditherImageData(
 }
 
 /**
- * High-level helper: Downsamples and dithers an HTMLImageElement or Canvas
- * and renders it onto a destination canvas preserving pixelated edges.
- * 
- * @param sourceImage HTMLImageElement | HTMLCanvasElement
- * @param config DitherConfig settings
- * @returns An HTMLCanvasElement containing the dithered portrait at exact pixel resolution
+ * Downsamples and dithers an HTMLImageElement or Canvas with portrait-aware framing.
  */
 export function processImageToDitheredCanvas(
   sourceImage: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement,
@@ -589,7 +742,6 @@ export function processImageToDitheredCanvas(
 ): HTMLCanvasElement {
   const targetRes = config.resolution || DEFAULT_DITHER_CONFIG.resolution;
 
-  // Determine aspect ratio preserving square crop / fill
   let srcW = 0;
   let srcH = 0;
   if (typeof HTMLVideoElement !== 'undefined' && sourceImage instanceof HTMLVideoElement) {
@@ -600,7 +752,6 @@ export function processImageToDitheredCanvas(
     srcH = sourceImage.height;
   }
 
-  // Intermediate canvas for downsampling
   const downsampleCanvas = document.createElement('canvas');
   downsampleCanvas.width = targetRes;
   downsampleCanvas.height = targetRes;
@@ -610,23 +761,18 @@ export function processImageToDitheredCanvas(
     throw new Error('Failed to obtain 2D canvas context');
   }
 
-  // Draw source image cropped to center square
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
   const minDim = Math.min(srcW, srcH);
   const sx = (srcW - minDim) / 2;
-  const sy = (srcH - minDim) / 2;
+  // If vertical image (srcH > srcW), portraits usually place the head in the upper-middle
+  const sy = srcH > srcW ? Math.max(0, (srcH - minDim) * 0.15) : (srcH - minDim) / 2;
 
   ctx.drawImage(sourceImage, sx, sy, minDim, minDim, 0, 0, targetRes, targetRes);
 
-  // Extract ImageData
   const sampledData = ctx.getImageData(0, 0, targetRes, targetRes);
-
-  // Apply dithering algorithm
   const ditheredData = ditherImageData(sampledData, config);
-
-  // Put dithered pixels back
   ctx.putImageData(ditheredData, 0, 0);
 
   return downsampleCanvas;

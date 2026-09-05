@@ -4,7 +4,13 @@
  * and badge styling for the Hackathon Pixel Badge Generator.
  */
 
-export type DitherAlgorithm = 'floyd-steinberg' | 'atkinson' | 'bayer' | 'threshold';
+export type DitherAlgorithm = 
+  | 'floyd-steinberg' 
+  | 'atkinson' 
+  | 'bayer' 
+  | 'bayer8'
+  | 'stucki'
+  | 'threshold';
 
 export interface DitherPaletteColor {
   r: number;
@@ -26,7 +32,7 @@ export interface DitherPalette {
  * Image processing & dithering tuning parameters
  */
 export interface DitherConfig {
-  /** Target resolution (width/height of pixelated portrait, e.g., 96, 128, 160) */
+  /** Target resolution (width/height of pixelated portrait, e.g., 96, 128, 180, 240, 360) */
   resolution: number;
   /** Number of quantization levels (default 4 for 4-level grayscale) */
   levels: number;
@@ -36,11 +42,19 @@ export interface DitherConfig {
   contrast: number;
   /** Brightness adjustment offset (-1.0 to 1.0, 0 is neutral) */
   brightness: number;
-  /** Strength of error diffusion (0.0 to 1.0, default 1.0) */
+  /** Strength of error diffusion (0.0 to 1.0, default 0.88) */
   diffusionStrength: number;
   /** Invert luminance levels */
   invert: boolean;
-  /** Custom 4-level color palette (black -> dark gray -> light gray -> white or custom theme) */
+  /** Smart facial dynamic range expansion & auto-exposure (default true) */
+  autoEnhance?: boolean;
+  /** Midtone gamma lift for underexposed webcams (0.4 to 1.8, default 1.0) */
+  gamma?: number;
+  /** Pre-dither edge sharpness for glasses and eyes (0.0 to 1.0, default 0.4) */
+  sharpness?: number;
+  /** Serpentine error diffusion to eliminate directional artifacts (default true) */
+  serpentine?: boolean;
+  /** Custom 4-level color palette */
   customPalette?: DitherPaletteColor[];
 }
 
