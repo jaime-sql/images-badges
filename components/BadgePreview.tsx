@@ -68,7 +68,7 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const safeName = (badgeState.participant.name || 'badge').toLowerCase().replace(/\s+/g, '-');
-      a.download = `nextcraft-badge-${badgeState.participant.ticketNumber || '001'}-${safeName}.png`;
+      a.download = `badge-${badgeState.participant.ticketNumber || '001'}-${safeName}.png`;
       a.href = url;
       document.body.appendChild(a);
       a.click();

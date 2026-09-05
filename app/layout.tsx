@@ -25,7 +25,7 @@ const silkscreen = Silkscreen({
 });
 
 export const metadata: Metadata = {
-  title: "NextCraft // Hackathon Pixel Badge Generator",
+  title: "Badge Generator // Pixel Art Hackathon Pass",
   description: "Retro brutalist 4-level dithered hackathon badge generator",
 };
 

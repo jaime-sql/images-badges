@@ -396,7 +396,7 @@ export async function renderBadgeToCanvas(
   ctx.save();
   ctx.fillStyle = theme.muted;
   ctx.font = '9px "Geist Mono", monospace';
-  ctx.fillText('NEXTCRAFT GRAPHICS ENGINE // CLIENT-SIDE DITHERING ACTIVE', 40, BADGE_HEIGHT - 32);
+  ctx.fillText('PIXEL BADGE ENGINE // CLIENT-SIDE DITHERING ACTIVE', 40, BADGE_HEIGHT - 32);
   ctx.textAlign = 'right';
   ctx.fillText('STATUS: ONLINE 🟢', BADGE_WIDTH - 40, BADGE_HEIGHT - 32);
   ctx.restore();
