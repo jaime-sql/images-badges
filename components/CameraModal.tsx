@@ -195,8 +195,14 @@ export default function CameraModal({ isOpen, onClose, onCapture }: CameraModalP
           )}
         </div>
 
+        {/* Lighting tip */}
+        <div className="text-[10px] font-mono text-zinc-400 bg-zinc-900/60 border border-zinc-800 px-3 py-1.5 mt-3 flex items-center justify-between">
+          <span>💡 TIP: Face your room light for the sharpest facial details</span>
+          <span className="text-emerald-400 font-bold">AUTO-EXPOSURE: ACTIVE</span>
+        </div>
+
         {/* Action Controls */}
-        <div className="mt-5 flex items-center justify-between gap-3">
+        <div className="mt-4 flex items-center justify-between gap-3">
           <button
             onClick={toggleCamera}
             disabled={!hasPermission}

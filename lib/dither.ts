@@ -276,10 +276,10 @@ export function prepareLuminanceBuffer(
     const median = sampleList[medianIdx] ?? 128;
     const range = Math.max(15, high - low);
 
-    // Target midtone around 0.52 (~133/255) ensures skin tones stipple beautifully
+    // Target midtone around 0.52-0.55 (~133-140/255) ensures skin tones stipple beautifully
     const normMedian = Math.max(0.05, Math.min(0.95, (median - low) / range));
-    const targetMid = 0.52;
-    const adaptGamma = Math.max(0.45, Math.min(1.4, Math.log(targetMid) / Math.log(normMedian)));
+    const targetMid = normMedian < 0.40 ? 0.55 : 0.52;
+    const adaptGamma = Math.max(0.42, Math.min(1.4, Math.log(targetMid) / Math.log(normMedian)));
     const finalGamma = adaptGamma * (gamma > 0 ? gamma : 1.0);
 
     for (let i = 0; i < w * h; i++) {
