@@ -543,6 +543,16 @@ export function portraitPlacement(source: ImageData, size: number, face?: FaceBo
       if (fitTop > 0) scale = Math.min(scale, fitTop);
     }
   }
+  // Keep about 5% of the panel clear above the hair. A crown pasted to the
+  // top edge is pulled down; a crown that already sits lower is left alone.
+  if (bounds.cutout && eyeY > bounds.minY + 1) {
+    const crownDest = destEyeY + (bounds.minY - eyeY) * scale;
+    const margin = size * 0.05;
+    if (crownDest < margin) {
+      const fitCrown = (destEyeY - margin) / (eyeY - bounds.minY);
+      if (fitCrown > 0) scale = Math.min(scale, fitCrown);
+    }
+  }
   return { centerX, eyeY, headWidth, scale, destEyeY };
 }
 
@@ -561,7 +571,81 @@ export function frameHeadAndShoulders(source: ImageData, size: number, face?: Fa
       sampleBilinear(source, sx, sy, out, (y * size + x) * 4);
     }
   }
-  return createImageData(out, size, size);
+  return squareCroppedTorso(createImageData(out, size, size));
+}
+
+/**
+ * A photo that ends inside the panel leaves a diagonal cut along the bottom.
+ * When that edge is still as wide as the torso, replace it with one horizontal
+ * line at chest level. A narrow chin, or a figure that already leaves the
+ * frame, is left alone.
+ */
+function squareCroppedTorso(source: ImageData): ImageData {
+  const { width, height, data } = source;
+  const rows: { left: number; right: number; span: number }[] = [];
+  let minY = height;
+  let maxY = -1;
+  let maxSpan = 0;
+  for (let y = 0; y < height; y++) {
+    const row = opaqueBounds(data, width, y, 0, width - 1);
+    rows.push(row);
+    if (row.span <= 0) continue;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (row.span > maxSpan) maxSpan = row.span;
+  }
+  if (maxY < 0 || maxY >= height - 2 || maxSpan < 8) return source;
+  const bottom = rows[maxY];
+  if (!bottom || bottom.span < maxSpan * 0.72) return source;
+
+  let cut = maxY;
+  const scanFrom = Math.max(minY, maxY - Math.floor(height * 0.12));
+  for (let y = maxY; y >= scanFrom; y--) {
+    const here = rows[y];
+    const above = rows[Math.max(minY, y - 3)];
+    if (!here || !above || here.span < maxSpan * 0.8) continue;
+    const slide = Math.abs(here.left - above.left) + Math.abs(here.right - above.right);
+    if (slide <= Math.max(2, width * 0.03)) {
+      cut = y;
+      break;
+    }
+  }
+
+  const edge = rows[cut];
+  if (!edge || edge.span < 8) return source;
+  const out = new Uint8ClampedArray(data);
+  for (let x = edge.left; x <= edge.right; x++) {
+    const pixel = cut * width + x;
+    if (out[pixel * 4 + 3] >= 24) continue;
+    let donor = -1;
+    for (let step = 1; step < edge.span; step++) {
+      if (x - step >= edge.left && out[(cut * width + x - step) * 4 + 3] >= 24) {
+        donor = x - step;
+        break;
+      }
+      if (x + step <= edge.right && out[(cut * width + x + step) * 4 + 3] >= 24) {
+        donor = x + step;
+        break;
+      }
+    }
+    if (donor < 0) continue;
+    const from = (cut * width + donor) * 4;
+    const to = pixel * 4;
+    out[to] = out[from];
+    out[to + 1] = out[from + 1];
+    out[to + 2] = out[from + 2];
+    out[to + 3] = 255;
+  }
+  for (let y = cut + 1; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      out[i] = 0;
+      out[i + 1] = 0;
+      out[i + 2] = 0;
+      out[i + 3] = 0;
+    }
+  }
+  return createImageData(out, width, height);
 }
 
 function opaqueLuminance(data: Uint8ClampedArray, pixel: number): number {
@@ -1451,7 +1535,51 @@ export function detectDarkFeatures(source: ImageData): Uint8Array {
       for (let x = mouthX0; x <= mouthX1; x++) protect[y * width + x] = 0;
     }
   }
+  strengthenEyeLine(protect, source);
   return protect;
+}
+
+/** Join broken glasses rims and mark dark dips in the eye band. */
+function strengthenEyeLine(protect: Uint8Array, source: ImageData): void {
+  const { width, height, data } = source;
+  const y0 = Math.floor(height * 0.34);
+  const y1 = Math.min(height - 2, Math.floor(height * 0.47));
+  const x0 = Math.floor(width * 0.28);
+  const x1 = Math.min(width - 2, Math.floor(width * 0.72));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0 + 1; x < x1; x++) {
+      const pixel = y * width + x;
+      if (data[pixel * 4 + 3] < 24) continue;
+      const lum = opaqueLuminance(data, pixel);
+      const left = opaqueLuminance(data, pixel - 1);
+      const right = opaqueLuminance(data, pixel + 1);
+      if (lum + 8 < left && lum + 8 < right) protect[pixel] = 1;
+    }
+    for (let x = x0; x <= x1; x++) {
+      const pixel = y * width + x;
+      if (!protect[pixel]) continue;
+      for (let gap = 1; gap <= 3; gap++) {
+        const nextX = x + gap + 1;
+        if (nextX > x1) break;
+        const next = y * width + nextX;
+        if (!protect[next]) continue;
+        let bridge = true;
+        for (let step = 1; step <= gap; step++) {
+          const between = pixel + step;
+          if (data[between * 4 + 3] < 24) {
+            bridge = false;
+            break;
+          }
+          if (opaqueLuminance(data, between) > opaqueLuminance(data, pixel) + 28) {
+            bridge = false;
+            break;
+          }
+        }
+        if (!bridge) continue;
+        for (let step = 1; step <= gap; step++) protect[pixel + step] = 1;
+      }
+    }
+  }
 }
 
 function downsampleMask(mask: Uint8Array, srcW: number, srcH: number, dstW: number, dstH: number): Uint8Array {
@@ -1579,6 +1707,53 @@ export function separateHair(posted: ImageData, original: ImageData, kind: SkinK
   return createImageData(out, width, height);
 }
 
+/**
+ * On a dark face, hair and beard sit one step below the skin.
+ * Skin is the cheek-lit forehead, nose, and cheeks. A shadow that is actually
+ * darker than the cheek stays put, so a portrait that already uses both dark
+ * grays is not flattened.
+ */
+export function separateDarkHairAndBeard(posted: ImageData, original: ImageData, kind: SkinKind): ImageData {
+  if (kind !== 'dark') return posted;
+  const median = faceMedianLuminance(original);
+  if (median <= 8) return posted;
+  const skinFloor = median * 0.78;
+  const hairCeiling = median * 0.7;
+  const { width, height } = posted;
+  const out = new Uint8ClampedArray(posted.data);
+  const paint = (pixel: number, index: number) => {
+    const color = PIXEL_PALETTE[index];
+    const i = pixel * 4;
+    out[i] = color.r;
+    out[i + 1] = color.g;
+    out[i + 2] = color.b;
+    out[i + 3] = 255;
+  };
+  for (let y = 0; y < height; y++) {
+    const ny = y / Math.max(1, height - 1);
+    for (let x = 0; x < width; x++) {
+      const pixel = y * width + x;
+      if (!isOpaque(original.data, pixel)) continue;
+      const nx = x / Math.max(1, width - 1);
+      const lum = opaqueLuminance(original.data, pixel);
+      const hairZone = ny < 0.34 && (ny < 0.22 || nx < 0.36 || nx > 0.64);
+      const beardZone = ny > 0.58 && ny < 0.82 && nx > 0.3 && nx < 0.7;
+      const skinZone = nx > 0.34 && nx < 0.66 && ny > 0.24 && ny < 0.58;
+      const tone = paletteIndexAt(out, pixel);
+      // A bright speck in the hair is not skin. The crown and the dark beard stay #3A3A40.
+      if ((hairZone && (lum < hairCeiling || tone >= 4)) || (beardZone && lum < hairCeiling)) {
+        paint(pixel, 1);
+        continue;
+      }
+      if (skinZone && lum >= skinFloor) {
+        const tone = paletteIndexAt(out, pixel);
+        if (tone >= 0 && tone < 2) paint(pixel, 2);
+      }
+    }
+  }
+  return createImageData(out, width, height);
+}
+
 function paintProtected(source: ImageData, protect: Uint8Array): ImageData {
   const out = new Uint8ClampedArray(source.data);
   for (let pixel = 0; pixel < protect.length; pixel++) {
@@ -1612,7 +1787,8 @@ export function renderPixelPortrait(
     const featureSmall = downsampleMask(features, framed.width, framed.height, PORTRAIT_GRID, PORTRAIT_GRID);
     const separated = separateHair(small, originalSmall, kind);
     const merged = mergeTinyRegions(separated, 6, featureSmall);
-    prepared = paintProtected(merged, featureSmall);
+    const parted = separateDarkHairAndBeard(merged, originalSmall, kind);
+    prepared = paintProtected(parted, featureSmall);
   }
   const outlined = applyOutlines(prepared);
   const grid = applyRim(outlined);

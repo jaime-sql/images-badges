@@ -18,6 +18,30 @@ export interface SegmentationProgress {
  * @param onProgress Optional callback to report download and inference progress
  * @returns Promise resolving to a Blob Object URL with background removed
  */
+let xnnpackFilterDepth = 0;
+let savedConsoleError: typeof console.error | null = null;
+
+function pushXnnpackFilter(): void {
+  if (xnnpackFilterDepth === 0) {
+    savedConsoleError = console.error;
+    const original = savedConsoleError;
+    console.error = (...args: unknown[]) => {
+      const text = args.map((item) => String(item)).join(' ');
+      if (text.includes('XNNPACK')) return;
+      original.apply(console, args);
+    };
+  }
+  xnnpackFilterDepth += 1;
+}
+
+function popXnnpackFilter(): void {
+  xnnpackFilterDepth = Math.max(0, xnnpackFilterDepth - 1);
+  if (xnnpackFilterDepth === 0 && savedConsoleError) {
+    console.error = savedConsoleError;
+    savedConsoleError = null;
+  }
+}
+
 export async function removeImageBackground(
   imageSource: Blob | File | string,
   onProgress?: (progress: SegmentationProgress) => void
@@ -25,6 +49,9 @@ export async function removeImageBackground(
   if (typeof window === 'undefined') {
     throw new Error('Background removal is only available client-side in the browser');
   }
+
+  const previousError = console.error;
+  pushXnnpackFilter();
 
   try {
     // Dynamic import to avoid any SSR evaluation
@@ -42,11 +69,13 @@ export async function removeImageBackground(
 
     return URL.createObjectURL(blob);
   } catch (error) {
-    console.error('Failed to segment background:', error);
+    previousError.call(console, 'Failed to segment background:', error);
     throw new Error(
       error instanceof Error
         ? error.message
         : 'Background segmentation failed. Please check browser WebAssembly support.'
     );
+  } finally {
+    popXnnpackFilter();
   }
 }

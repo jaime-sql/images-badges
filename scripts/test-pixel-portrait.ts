@@ -26,7 +26,9 @@ import {
   faceMedianLuminance,
   normalizeExposure,
   portraitPlacement,
+  separateDarkHairAndBeard,
 } from '../lib/pixel-portrait.ts';
+import { applyBadgeStyle } from '../lib/badge-style.ts';
 import { createImageData } from '../lib/dither.ts';
 
 function solid(width, height, r, g, b, a = 255) {
@@ -321,6 +323,61 @@ test('a white background lifts an underexposed light face without lifting a dark
   assert.equal(classifySkin(light), 'light');
   const darkOnWhite = normalizeExposure(40, 200);
   assert.equal(classifySkin(darkOnWhite), 'dark');
+});
+
+test('classic dither and pixel sprite leave the pixel portrait preview', () => {
+  const portrait = { style: 'classic', portraitStyle: 'pixel-portrait' };
+  const dither = applyBadgeStyle(portrait, 'classic');
+  assert.equal(dither.style, 'classic');
+  assert.equal(dither.portraitStyle, 'dither');
+  const sprite = applyBadgeStyle(portrait, 'pixel-sprite');
+  assert.equal(sprite.style, 'pixel-sprite');
+  assert.equal(sprite.portraitStyle, 'dither');
+});
+
+test('hair keeps a margin under the top of the panel', () => {
+  const width = 80;
+  const height = 220;
+  const image = solid(width, height, 0, 0, 0, 0);
+  for (let y = 0; y < 200; y++) {
+    for (let x = 18; x < 62; x++) setPixel(image, x, y, 36, 34, 32);
+  }
+  const face = { x: 20, y: 36, width: 40, height: 52, eyeX: 40, eyeY: 56 };
+  const place = portraitPlacement(image, 100, face);
+  const crownDest = place.destEyeY + (0 - place.eyeY) * place.scale;
+  assert.ok(crownDest >= 4.5, `crown at ${crownDest.toFixed(1)}`);
+  const fraction = place.destEyeY / 100;
+  assert.ok(fraction >= 0.3 && fraction <= 0.5, `eyes at ${fraction.toFixed(2)}`);
+});
+
+test('dark hair and beard leave the cheeks, and a real shadow stays dark', () => {
+  const width = 32;
+  const height = 40;
+  const image = solid(width, height, 0, 0, 0, 0);
+  for (let y = 0; y < 8; y++) {
+    for (let x = 4; x < 28; x++) setPixel(image, x, y, 28, 26, 24);
+  }
+  for (let y = 8; y < 24; y++) {
+    for (let x = 8; x < 24; x++) setPixel(image, x, y, 96, 92, 88);
+  }
+  for (let y = 14; y < 20; y++) {
+    for (let x = 8; x < 12; x++) setPixel(image, x, y, 46, 44, 42);
+  }
+  for (let y = 26; y < 34; y++) {
+    for (let x = 10; x < 22; x++) setPixel(image, x, y, 22, 20, 18);
+  }
+  const posted = posterize(image);
+  const parted = separateDarkHairAndBeard(posted, image, 'dark');
+  const tone = (x, y) => {
+    const i = (y * width + x) * 4;
+    return nearestPaletteIndex(parted.data[i], parted.data[i + 1], parted.data[i + 2]);
+  };
+  assert.equal(tone(16, 2), 1);
+  assert.equal(tone(16, 30), 1);
+  assert.equal(tone(18, 12), 2);
+  assert.equal(tone(9, 16), 1);
+  const unchanged = separateDarkHairAndBeard(posted, image, 'medium');
+  assert.equal(unchanged.data[(12 * width + 18) * 4], posted.data[(12 * width + 18) * 4]);
 });
 
 test('a bright crown is not treated as the eye line', () => {

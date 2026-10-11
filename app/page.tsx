@@ -11,6 +11,7 @@ import React, { useState } from 'react';
 import { BadgeState, ParticipantDetails, DitherConfig, BadgeTheme, BadgeStyle, PortraitStyle, EventCardConfig, DEFAULT_EVENT_CARD } from '@/types/badge';
 import { DEFAULT_DITHER_CONFIG } from '@/lib/dither';
 import { removeImageBackground, SegmentationProgress } from '@/lib/segmentation';
+import { applyBadgeStyle } from '@/lib/badge-style';
 import ImageUploader from '@/components/ImageUploader';
 import CameraModal from '@/components/CameraModal';
 import BadgeForm from '@/components/BadgeForm';
@@ -81,7 +82,7 @@ export default function Home() {
   };
 
   const handleStyleChange = (style: BadgeStyle) => {
-    setBadgeState((prev) => ({ ...prev, style }));
+    setBadgeState((prev) => applyBadgeStyle(prev, style));
   };
 
   const handlePortraitStyleChange = (portraitStyle: PortraitStyle) => {
