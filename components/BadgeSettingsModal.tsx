@@ -165,6 +165,17 @@ export default function BadgeSettingsModal({
                   />
                 </div>
 
+                <div className="sm:col-span-2">
+                  <label className="block text-zinc-400 mb-1">PIXEL SPRITE TYPE CHIP</label>
+                  <input
+                    type="text"
+                    value={participant.spriteType}
+                    onChange={(e) => onParticipantChange({ spriteType: e.target.value })}
+                    className="w-full border border-zinc-800 bg-black px-3 py-2 text-zinc-200 focus:border-emerald-500 focus:outline-none"
+                    placeholder="Data Engineer"
+                  />
+                </div>
+
                 <div>
                   <label className="block text-zinc-400 mb-1">TICKET #</label>
                   <input

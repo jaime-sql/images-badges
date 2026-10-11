@@ -8,16 +8,17 @@
 
 import React, { useRef, useState } from 'react';
 import { Upload, Camera, Trash2, Wand2, Loader2, CheckCircle2 } from 'lucide-react';
-import { removeImageBackground, SegmentationProgress } from '../lib/segmentation';
+import { SegmentationProgress } from '../lib/segmentation';
 
 interface ImageUploaderProps {
   rawImage: string | null;
   segmentedImage: string | null;
   segmentationStatus: 'idle' | 'processing' | 'success' | 'error';
   segmentationError?: string | null;
-  onRawImageChange: (dataUrl: string | null) => void;
-  onSegmentedImageChange: (dataUrl: string | null) => void;
-  onSegmentationStatusChange: (status: 'idle' | 'processing' | 'success' | 'error', error?: string | null) => void;
+  segmentationProgress: SegmentationProgress | null;
+  onPhotoSelected: (dataUrl: string) => void;
+  onUseOriginal: () => void;
+  onReset: () => void;
   onOpenWebcam: () => void;
 }
 
@@ -26,14 +27,14 @@ export default function ImageUploader({
   segmentedImage,
   segmentationStatus,
   segmentationError,
-  onRawImageChange,
-  onSegmentedImageChange,
-  onSegmentationStatusChange,
+  segmentationProgress,
+  onPhotoSelected,
+  onUseOriginal,
+  onReset,
   onOpenWebcam,
 }: ImageUploaderProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [progressInfo, setProgressInfo] = useState<SegmentationProgress | null>(null);
 
   const handleFile = (file: File) => {
     if (!file.type.startsWith('image/')) {
@@ -44,9 +45,7 @@ export default function ImageUploader({
     const reader = new FileReader();
     reader.onload = (e) => {
       const result = e.target?.result as string;
-      onRawImageChange(result);
-      onSegmentedImageChange(null);
-      onSegmentationStatusChange('idle');
+      if (result) onPhotoSelected(result);
     };
     reader.readAsDataURL(file);
   };
@@ -59,25 +58,8 @@ export default function ImageUploader({
     }
   };
 
-  const handleSegment = async () => {
-    if (!rawImage) return;
-    try {
-      onSegmentationStatusChange('processing');
-      setProgressInfo(null);
-
-      const transparentUrl = await removeImageBackground(rawImage, (p) => {
-        setProgressInfo(p);
-      });
-
-      onSegmentedImageChange(transparentUrl);
-      onSegmentationStatusChange('success');
-    } catch (err) {
-      console.error(err);
-      onSegmentationStatusChange('error', err instanceof Error ? err.message : 'Segmentation failed');
-    }
-  };
-
   const activeImage = segmentedImage || rawImage;
+  const progressPct = segmentationProgress?.percentage ?? 0;
 
   return (
     <div className="flex flex-col gap-4 border border-zinc-800 bg-[#0d0f14] p-4">
@@ -87,11 +69,7 @@ export default function ImageUploader({
         </span>
         {activeImage && (
           <button
-            onClick={() => {
-              onRawImageChange(null);
-              onSegmentedImageChange(null);
-              onSegmentationStatusChange('idle');
-            }}
+            onClick={onReset}
             className="flex items-center gap-1 font-mono text-[10px] text-red-400 hover:text-red-300"
           >
             <Trash2 className="h-3 w-3" /> RESET
@@ -109,50 +87,61 @@ export default function ImageUploader({
               alt="Participant source"
               className="h-full w-full object-cover"
             />
-            {segmentedImage && (
+            {segmentationStatus === 'processing' && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70">
+                <Loader2 className="h-6 w-6 animate-spin text-emerald-400" />
+                <span className="font-mono text-[10px] font-bold text-emerald-300">
+                  REMOVING BACKGROUND {progressPct}%
+                </span>
+              </div>
+            )}
+            {segmentedImage && segmentationStatus === 'success' && (
               <span className="absolute top-1 right-1 bg-emerald-500/90 text-black px-1.5 py-0.5 font-mono text-[9px] font-bold">
-                SEGMENTED
+                CUT OUT
               </span>
             )}
           </div>
 
-          {/* AI Background Removal Action */}
+          {/* Background removal runs on upload and webcam capture. */}
           <div className="flex flex-col gap-2">
-            {!segmentedImage ? (
-              <button
-                onClick={handleSegment}
-                disabled={segmentationStatus === 'processing'}
-                className="flex items-center justify-center gap-2 border border-emerald-500/80 bg-emerald-950/40 py-2 px-3 font-mono text-xs font-semibold text-emerald-300 hover:bg-emerald-900/60 disabled:opacity-50 transition"
-              >
-                {segmentationStatus === 'processing' ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
-                    <span>REMOVING BACKGROUND ({progressInfo?.percentage || 0}%)...</span>
-                  </>
-                ) : (
-                  <>
-                    <Wand2 className="h-4 w-4 text-emerald-400" />
-                    <span>REMOVE BACKGROUND (AI WASM)</span>
-                  </>
-                )}
-              </button>
-            ) : (
+            {segmentationStatus === 'processing' ? (
+              <div className="flex items-center justify-center gap-2 border border-emerald-500/80 bg-emerald-950/40 py-2 px-3 font-mono text-xs font-semibold text-emerald-300">
+                <Loader2 className="h-4 w-4 animate-spin text-emerald-400" />
+                <span>REMOVING BACKGROUND ({progressPct}%)...</span>
+              </div>
+            ) : segmentationStatus === 'success' && segmentedImage ? (
               <div className="flex items-center justify-between border border-zinc-800 bg-zinc-900/50 p-2 text-xs font-mono text-zinc-300">
                 <span className="flex items-center gap-1.5 text-emerald-400">
                   <CheckCircle2 className="h-4 w-4" /> Background Removed
                 </span>
                 <button
-                  onClick={() => onSegmentedImageChange(null)}
+                  onClick={onUseOriginal}
                   className="text-[11px] text-zinc-400 hover:text-white underline"
                 >
                   Use Original
                 </button>
               </div>
+            ) : segmentationStatus === 'error' ? (
+              <button
+                onClick={() => rawImage && onPhotoSelected(rawImage)}
+                className="flex items-center justify-center gap-2 border border-amber-500/80 bg-amber-950/30 py-2 px-3 font-mono text-xs font-semibold text-amber-200 hover:bg-amber-950/50 transition"
+              >
+                <Wand2 className="h-4 w-4" />
+                RETRY BACKGROUND REMOVAL
+              </button>
+            ) : (
+              <button
+                onClick={() => rawImage && onPhotoSelected(rawImage)}
+                className="flex items-center justify-center gap-2 border border-emerald-500/80 bg-emerald-950/40 py-2 px-3 font-mono text-xs font-semibold text-emerald-300 hover:bg-emerald-900/60 transition"
+              >
+                <Wand2 className="h-4 w-4 text-emerald-400" />
+                REMOVE BACKGROUND (AI WASM)
+              </button>
             )}
 
             {segmentationError && (
               <p className="font-mono text-[10px] text-amber-400">
-                Notice: {segmentationError}. Proceeding with original image.
+                Notice: {segmentationError}. Using the original photo.
               </p>
             )}
           </div>

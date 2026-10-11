@@ -8,8 +8,9 @@
  */
 
 import React, { useState } from 'react';
-import { BadgeState, ParticipantDetails, DitherConfig, BadgeTheme } from '@/types/badge';
+import { BadgeState, ParticipantDetails, DitherConfig, BadgeTheme, BadgeStyle } from '@/types/badge';
 import { DEFAULT_DITHER_CONFIG } from '@/lib/dither';
+import { removeImageBackground, SegmentationProgress } from '@/lib/segmentation';
 import ImageUploader from '@/components/ImageUploader';
 import CameraModal from '@/components/CameraModal';
 import BadgeForm from '@/components/BadgeForm';
@@ -22,6 +23,7 @@ const INITIAL_PARTICIPANT: ParticipantDetails = {
   handle: '',
   role: 'BUILDER',
   track: 'GENERAL HACK',
+  spriteType: 'Data Engineer',
   ticketNumber: '#0429',
   qrPayload: 'https://github.com/jaime-sql/images-badges',
   eventTitle: 'BADGE GENERATOR // 2026',
@@ -34,6 +36,7 @@ export default function Home() {
     participant: INITIAL_PARTICIPANT,
     dither: DEFAULT_DITHER_CONFIG,
     theme: 'dark-brutalist',
+    style: 'classic',
     rawImage: null,
     segmentedImage: null,
     segmentationStatus: 'idle',
@@ -42,6 +45,7 @@ export default function Home() {
 
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [segmentationProgress, setSegmentationProgress] = useState<SegmentationProgress | null>(null);
 
   // Participant updates
   const handleParticipantChange = (updated: Partial<ParticipantDetails>) => {
@@ -65,6 +69,87 @@ export default function Home() {
       ...prev,
       theme,
     }));
+  };
+
+  const handleStyleChange = (style: BadgeStyle) => {
+    setBadgeState((prev) => ({ ...prev, style }));
+  };
+
+  const releaseBlob = (url: string | null) => {
+    if (url && url.startsWith('blob:')) URL.revokeObjectURL(url);
+  };
+
+  // Upload and webcam both cut the background out immediately.
+  // A failure keeps the original photo so the badge can still be made.
+  const acquirePhoto = (dataUrl: string) => {
+    setSegmentationProgress(null);
+    setBadgeState((prev) => {
+      releaseBlob(prev.segmentedImage);
+      return {
+        ...prev,
+        rawImage: dataUrl,
+        segmentedImage: null,
+        segmentationStatus: 'processing',
+        segmentationError: null,
+      };
+    });
+
+    removeImageBackground(dataUrl, (progress) => {
+      setSegmentationProgress(progress);
+    })
+      .then((url) => {
+        setBadgeState((prev) => {
+          if (prev.rawImage !== dataUrl) {
+            releaseBlob(url);
+            return prev;
+          }
+          releaseBlob(prev.segmentedImage);
+          return {
+            ...prev,
+            segmentedImage: url,
+            segmentationStatus: 'success',
+            segmentationError: null,
+          };
+        });
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : 'Background segmentation failed';
+        setBadgeState((prev) => {
+          if (prev.rawImage !== dataUrl) return prev;
+          return {
+            ...prev,
+            segmentedImage: null,
+            segmentationStatus: 'error',
+            segmentationError: message,
+          };
+        });
+      });
+  };
+
+  const handleResetPhoto = () => {
+    setSegmentationProgress(null);
+    setBadgeState((prev) => {
+      releaseBlob(prev.segmentedImage);
+      return {
+        ...prev,
+        rawImage: null,
+        segmentedImage: null,
+        segmentationStatus: 'idle',
+        segmentationError: null,
+      };
+    });
+  };
+
+  const handleUseOriginal = () => {
+    setBadgeState((prev) => {
+      releaseBlob(prev.segmentedImage);
+      return {
+        ...prev,
+        segmentedImage: null,
+        segmentationStatus: 'idle',
+        segmentationError: null,
+      };
+    });
   };
 
   // Load a built-in demo avatar for instant testing
@@ -200,17 +285,10 @@ export default function Home() {
               segmentedImage={badgeState.segmentedImage}
               segmentationStatus={badgeState.segmentationStatus}
               segmentationError={badgeState.segmentationError}
-              onRawImageChange={(url) => setBadgeState((prev) => ({ ...prev, rawImage: url }))}
-              onSegmentedImageChange={(url) =>
-                setBadgeState((prev) => ({ ...prev, segmentedImage: url }))
-              }
-              onSegmentationStatusChange={(status, error) =>
-                setBadgeState((prev) => ({
-                  ...prev,
-                  segmentationStatus: status,
-                  segmentationError: error,
-                }))
-              }
+              segmentationProgress={segmentationProgress}
+              onPhotoSelected={acquirePhoto}
+              onUseOriginal={handleUseOriginal}
+              onReset={handleResetPhoto}
               onOpenWebcam={() => setIsCameraOpen(true)}
             />
 
@@ -219,7 +297,9 @@ export default function Home() {
               participant={badgeState.participant}
               dither={badgeState.dither}
               theme={badgeState.theme}
+              style={badgeState.style}
               onParticipantChange={handleParticipantChange}
+              onStyleChange={handleStyleChange}
               onOpenSettings={() => setIsSettingsOpen(true)}
             />
           </section>
@@ -246,12 +326,7 @@ export default function Home() {
         isOpen={isCameraOpen}
         onClose={() => setIsCameraOpen(false)}
         onCapture={(dataUrl) => {
-          setBadgeState((prev) => ({
-            ...prev,
-            rawImage: dataUrl,
-            segmentedImage: null,
-            segmentationStatus: 'idle',
-          }));
+          acquirePhoto(dataUrl);
         }}
       />
 

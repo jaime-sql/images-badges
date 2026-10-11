@@ -29,6 +29,8 @@ export const metadata: Metadata = {
   description: "Retro brutalist 4-level dithered hackathon badge generator",
 };
 
+const pixelFontHref = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ''}/fonts/PressStart2P-Regular.ttf`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -39,6 +41,15 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} ${pressStart2P.variable} ${silkscreen.variable} h-full antialiased dark`}
     >
+      <head>
+        <link
+          rel="preload"
+          href={pixelFontHref}
+          as="font"
+          type="font/ttf"
+          crossOrigin="anonymous"
+        />
+      </head>
       <body className="min-h-full flex flex-col bg-[#0d0f12] text-[#e2e8f0] font-mono">{children}</body>
     </html>
   );

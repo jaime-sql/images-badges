@@ -12,8 +12,14 @@
  */
 
 import QRCode from 'qrcode';
-import { BadgeState, BadgeThemeConfig } from '../types/badge';
-import { FOUR_LEVEL_GRAYSCALE, processImageToDitheredCanvas } from './dither';
+import type { BadgeState, BadgeThemeConfig } from '../types/badge';
+import {
+  FOUR_LEVEL_GRAYSCALE,
+  cutoutOutlineForBackground,
+  paintCutoutOutline,
+  processImageToDitheredCanvas,
+} from './dither';
+import { renderPixelSpriteBadge } from './pixel-sprite';
 
 export const BADGE_WIDTH = 640;
 export const BADGE_HEIGHT = 960;
@@ -403,12 +409,35 @@ export async function renderBadgeToCanvas(
 }
 
 /**
- * Full pipeline orchestrator: creates a badge canvas from state and raw/segmented image
+ * Nearest-neighbour upscale, then a 2px rim just outside the cut-out so dark
+ * hair does not melt into the badge background.
  */
+function scalePortraitWithOutline(
+  source: HTMLCanvasElement,
+  size: number,
+  outline: { r: number; g: number; b: number }
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return source;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(source, 0, 0, size, size);
+  const outlined = paintCutoutOutline(ctx.getImageData(0, 0, size, size), outline, 2);
+  ctx.putImageData(outlined, 0, 0);
+  return canvas;
+}
+
 export async function composeBadge(state: BadgeState): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   canvas.width = BADGE_WIDTH;
   canvas.height = BADGE_HEIGHT;
+
+  if (state.style === 'pixel-sprite') {
+    await renderPixelSpriteBadge(canvas, state);
+    return canvas;
+  }
 
   let ditheredPortraitCanvas: HTMLCanvasElement | null = null;
   const imageSourceUrl = state.segmentedImage || state.rawImage;
@@ -424,10 +453,15 @@ export async function composeBadge(state: BadgeState): Promise<HTMLCanvasElement
     });
 
     const theme = BADGE_THEMES[state.theme] || BADGE_THEMES['dark-brutalist'];
-    ditheredPortraitCanvas = processImageToDitheredCanvas(img, {
+    const dithered = processImageToDitheredCanvas(img, {
       ...state.dither,
       customPalette: theme.palette,
     });
+    ditheredPortraitCanvas = scalePortraitWithOutline(
+      dithered,
+      360,
+      cutoutOutlineForBackground(theme.background)
+    );
   }
 
   await renderBadgeToCanvas(canvas, state, ditheredPortraitCanvas);

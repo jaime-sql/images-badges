@@ -21,8 +21,13 @@ import type { DitherConfig, DitherPaletteColor } from '../types/badge';
 /**
  * Standard 4-level grayscale palette (values: 0, 85, 170, 255)
  */
+/**
+ * Darkest swatch is lifted off pure black so hair, pupils, and dark clothes
+ * stay separate from the #090a0f badge. Output alpha is the source pixel's
+ * alpha, not this field.
+ */
 export const FOUR_LEVEL_GRAYSCALE: DitherPaletteColor[] = [
-  { r: 0, g: 0, b: 0, a: 255 },       // Pure Black (0x00)
+  { r: 28, g: 30, b: 38, a: 255 },    // Lifted black (~#1c1e26)
   { r: 85, g: 85, b: 85, a: 255 },    // Dark Gray  (0x55)
   { r: 170, g: 170, b: 170, a: 255 }, // Light Gray (0xAA)
   { r: 255, g: 255, b: 255, a: 255 }, // Crisp White (0xFF)
@@ -206,8 +211,9 @@ export function createImageData(
   width: number,
   height: number
 ): ImageData {
-  if (typeof ImageData !== 'undefined') {
-    return new ImageData(data as unknown as Uint8ClampedArray<ArrayBuffer>, width, height);
+  const ImageDataCtor = globalThis.ImageData;
+  if (typeof ImageDataCtor === 'function') {
+    return new ImageDataCtor(data as unknown as Uint8ClampedArray<ArrayBuffer>, width, height);
   }
   return {
     data,
@@ -255,7 +261,8 @@ export function prepareLuminanceBuffer(
   const processedLum = new Float32Array(w * h);
 
   if (autoEnhance) {
-    // Collect foreground samples (alpha >= 20)
+    // Exposure is measured on foreground (alpha) pixels only. Transparent
+    // background pixels must not pull the black point down to 0.
     const samples: number[] = [];
     for (let i = 0; i < w * h; i++) {
       if (alphaBuffer[i] >= 20) {
@@ -263,18 +270,19 @@ export function prepareLuminanceBuffer(
       }
     }
 
-    const sampleList = samples.length >= (w * h * 0.05) ? samples : Array.from(rawLum);
-    sampleList.sort((a, b) => a - b);
+    samples.sort((a, b) => a - b);
 
-    // 2nd and 98th percentile anchors
-    const pLowIdx = Math.floor(sampleList.length * 0.02);
-    const pHighIdx = Math.floor(sampleList.length * 0.98);
-    const medianIdx = Math.floor(sampleList.length * 0.5);
+    // Soft stretch: 0.5th / 98th percentile, and never expand a range
+    // narrower than ~60. The old 2% / min-range-15 curve crushed hair,
+    // dark clothes, and shadowed faces into the bottom swatch.
+    const pLowIdx = Math.floor(samples.length * 0.005);
+    const pHighIdx = Math.min(samples.length - 1, Math.floor(samples.length * 0.98));
+    const medianIdx = Math.floor(samples.length * 0.5);
 
-    const low = sampleList[pLowIdx] ?? 0;
-    const high = sampleList[pHighIdx] ?? 255;
-    const median = sampleList[medianIdx] ?? 128;
-    const range = Math.max(15, high - low);
+    const low = samples.length > 0 ? (samples[pLowIdx] ?? 0) : 0;
+    const high = samples.length > 0 ? (samples[pHighIdx] ?? 255) : 255;
+    const median = samples.length > 0 ? (samples[medianIdx] ?? 128) : 128;
+    const range = Math.max(60, high - low);
 
     // Target midtone around 0.52-0.55 (~133-140/255) ensures skin tones stipple beautifully
     const normMedian = Math.max(0.05, Math.min(0.95, (median - low) / range));
@@ -389,7 +397,7 @@ export function applyFloydSteinbergDither(
       outputData[dstIdx] = color.r;
       outputData[dstIdx + 1] = color.g;
       outputData[dstIdx + 2] = color.b;
-      outputData[dstIdx + 3] = color.a ?? alpha;
+      outputData[dstIdx + 3] = alpha;
 
       if (!isOddRow) {
         // Left to right diffusion
@@ -471,7 +479,7 @@ export function applyAtkinsonDither(
       outputData[dstIdx] = color.r;
       outputData[dstIdx + 1] = color.g;
       outputData[dstIdx + 2] = color.b;
-      outputData[dstIdx + 3] = color.a ?? alpha;
+      outputData[dstIdx + 3] = alpha;
 
       const spread = error * weight;
 
@@ -537,7 +545,7 @@ export function applyStuckiDither(
       outputData[dstIdx] = color.r;
       outputData[dstIdx + 1] = color.g;
       outputData[dstIdx + 2] = color.b;
-      outputData[dstIdx + 3] = color.a ?? alpha;
+      outputData[dstIdx + 3] = alpha;
 
       const err = error * s;
 
@@ -610,7 +618,7 @@ export function applyBayerDither(
       outputData[dstIdx] = color.r;
       outputData[dstIdx + 1] = color.g;
       outputData[dstIdx + 2] = color.b;
-      outputData[dstIdx + 3] = color.a ?? alpha;
+      outputData[dstIdx + 3] = alpha;
     }
   }
 
@@ -660,7 +668,7 @@ export function applyBayer8Dither(
       outputData[dstIdx] = color.r;
       outputData[dstIdx + 1] = color.g;
       outputData[dstIdx + 2] = color.b;
-      outputData[dstIdx + 3] = color.a ?? alpha;
+      outputData[dstIdx + 3] = alpha;
     }
   }
 
@@ -701,7 +709,7 @@ export function applyThresholdDither(
     outputData[dstIdx] = color.r;
     outputData[dstIdx + 1] = color.g;
     outputData[dstIdx + 2] = color.b;
-    outputData[dstIdx + 3] = color.a ?? alpha;
+    outputData[dstIdx + 3] = alpha;
   }
 
   return createImageData(outputData, w, h);
@@ -731,6 +739,131 @@ export function ditherImageData(
     default:
       return applyFloydSteinbergDither(source, config);
   }
+}
+
+/**
+ * Square crop used by both the classic dither and the pixel-sprite pipeline.
+ * Vertical photos bias the window toward the head (15% from the top).
+ */
+export function portraitCropRect(
+  srcW: number,
+  srcH: number
+): { sx: number; sy: number; size: number } {
+  const size = Math.min(srcW, srcH);
+  const sx = (srcW - size) / 2;
+  const sy = srcH > srcW ? Math.max(0, (srcH - size) * 0.15) : (srcH - size) / 2;
+  return { sx, sy, size };
+}
+
+/**
+ * Box-filter downsample. Constant regions stay constant; used by the math tests
+ * and anywhere a pure (non-canvas) resize is required.
+ */
+export function downsampleImageData(
+  source: ImageData,
+  targetW: number,
+  targetH: number
+): ImageData {
+  const out = new Uint8ClampedArray(targetW * targetH * 4);
+  const xScale = source.width / targetW;
+  const yScale = source.height / targetH;
+
+  for (let y = 0; y < targetH; y++) {
+    const y0 = Math.floor(y * yScale);
+    const y1 = Math.max(y0 + 1, Math.floor((y + 1) * yScale));
+    for (let x = 0; x < targetW; x++) {
+      const x0 = Math.floor(x * xScale);
+      const x1 = Math.max(x0 + 1, Math.floor((x + 1) * xScale));
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      let n = 0;
+      for (let yy = y0; yy < y1 && yy < source.height; yy++) {
+        for (let xx = x0; xx < x1 && xx < source.width; xx++) {
+          const i = (yy * source.width + xx) * 4;
+          r += source.data[i];
+          g += source.data[i + 1];
+          b += source.data[i + 2];
+          a += source.data[i + 3];
+          n++;
+        }
+      }
+      const o = (y * targetW + x) * 4;
+      const div = n || 1;
+      out[o] = Math.round(r / div);
+      out[o + 1] = Math.round(g / div);
+      out[o + 2] = Math.round(b / div);
+      out[o + 3] = Math.round(a / div);
+    }
+  }
+
+  return createImageData(out, targetW, targetH);
+}
+
+/**
+ * Rim colour for a cut-out sitting on `backgroundHex`. A modest lift off the
+ * badge fill so the silhouette reads as a separate shape. #090a0f becomes #3a4050.
+ */
+export function cutoutOutlineForBackground(backgroundHex: string): { r: number; g: number; b: number } {
+  const hex = backgroundHex.replace('#', '');
+  const n = parseInt(hex, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return {
+    r: Math.min(255, Math.max(r + 49, 58)),
+    g: Math.min(255, Math.max(g + 54, 64)),
+    b: Math.min(255, Math.max(b + 65, 80)),
+  };
+}
+
+/**
+ * Paint a 4-connected outline around opaque (alpha >= 20) pixels.
+ * `thickness` is in pixels of this buffer. Transparent pixels stay transparent
+ * except where the rim is drawn.
+ */
+export function paintCutoutOutline(
+  source: ImageData,
+  color: { r: number; g: number; b: number },
+  thickness = 1
+): ImageData {
+  const w = source.width;
+  const h = source.height;
+  const src = source.data;
+  let mask = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    mask[i] = src[i * 4 + 3] >= 20 ? 1 : 0;
+  }
+
+  const steps = Math.max(1, thickness);
+  for (let step = 0; step < steps; step++) {
+    const next = new Uint8Array(mask);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (mask[i]) continue;
+        const left = x > 0 && mask[i - 1];
+        const right = x + 1 < w && mask[i + 1];
+        const up = y > 0 && mask[i - w];
+        const down = y + 1 < h && mask[i + w];
+        if (left || right || up || down) next[i] = 2;
+      }
+    }
+    mask = next;
+  }
+
+  const out = new Uint8ClampedArray(src);
+  for (let i = 0; i < w * h; i++) {
+    if (mask[i] === 2) {
+      const o = i * 4;
+      out[o] = color.r;
+      out[o + 1] = color.g;
+      out[o + 2] = color.b;
+      out[o + 3] = 255;
+    }
+  }
+  return createImageData(out, w, h);
 }
 
 /**
@@ -764,12 +897,8 @@ export function processImageToDitheredCanvas(
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
 
-  const minDim = Math.min(srcW, srcH);
-  const sx = (srcW - minDim) / 2;
-  // If vertical image (srcH > srcW), portraits usually place the head in the upper-middle
-  const sy = srcH > srcW ? Math.max(0, (srcH - minDim) * 0.15) : (srcH - minDim) / 2;
-
-  ctx.drawImage(sourceImage, sx, sy, minDim, minDim, 0, 0, targetRes, targetRes);
+  const crop = portraitCropRect(srcW, srcH);
+  ctx.drawImage(sourceImage, crop.sx, crop.sy, crop.size, crop.size, 0, 0, targetRes, targetRes);
 
   const sampledData = ctx.getImageData(0, 0, targetRes, targetRes);
   const ditheredData = ditherImageData(sampledData, config);
