@@ -10,10 +10,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --import ./scripts/register-ts.mjs scripts/test-dither.mjs && node --experimental-strip-types --import ./scripts/register-ts.mjs scripts/test-sprite.mjs"
+    "test": "node --experimental-strip-types --import ./scripts/register-ts.mjs scripts/test-dither.ts && node --experimental-strip-types --import ./scripts/register-ts.mjs scripts/test-sprite.mjs && tsx scripts/test-pixel-portrait.ts && tsx scripts/test-text-fit.ts && tsx scripts/test-svg-sanitize.ts && tsx scripts/test-worker.ts"
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",
+    "@mediapipe/tasks-vision": "^1.1.0",
     "canvas-confetti": "^1.9.4",
     "lucide-react": "^1.41.0",
     "next": "16.3.4",
@@ -31,6 +32,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
     "tailwindcss": "^4",
+    "tsx": "^4.20.6",
     "typescript": "^5"
   }
 }

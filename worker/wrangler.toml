@@ -1,0 +1,32 @@
+name = "portrait"
+main = "src/entry.ts"
+compatibility_date = "2026-10-11"
+compatibility_flags = ["nodejs_compat"]
+
+# OPENAI_API_KEY is a secret: wrangler secret put OPENAI_API_KEY
+# Do not put it in this file. Mock mode is off unless a local .dev.vars sets it.
+
+[vars]
+OPENAI_IMAGE_MODEL = "gpt-image-1-mini"
+OPENAI_IMAGE_QUALITY = "low"
+PER_IP_DAILY_LIMIT = "5"
+SITE_DAILY_LIMIT = "50"
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+
+[[durable_objects.bindings]]
+name = "PORTRAIT_QUOTA"
+class_name = "PortraitQuota"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PortraitQuota"]

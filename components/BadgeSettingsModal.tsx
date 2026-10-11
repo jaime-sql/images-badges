@@ -21,6 +21,7 @@ import {
   DitherConfig,
   BadgeTheme,
   DitherAlgorithm,
+  PortraitStyle,
 } from '../types/badge';
 import { DEFAULT_DITHER_CONFIG } from '../lib/dither';
 
@@ -30,9 +31,11 @@ interface BadgeSettingsModalProps {
   participant: ParticipantDetails;
   dither: DitherConfig;
   theme: BadgeTheme;
+  portraitStyle: PortraitStyle;
   onParticipantChange: (updated: Partial<ParticipantDetails>) => void;
   onDitherChange: (updated: Partial<DitherConfig>) => void;
   onThemeChange: (theme: BadgeTheme) => void;
+  onPortraitStyleChange: (style: PortraitStyle) => void;
 }
 
 type SettingsTab = 'details' | 'graphics' | 'theme';
@@ -43,9 +46,11 @@ export default function BadgeSettingsModal({
   participant,
   dither,
   theme,
+  portraitStyle,
   onParticipantChange,
   onDitherChange,
   onThemeChange,
+  onPortraitStyleChange,
 }: BadgeSettingsModalProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('details');
 
@@ -239,6 +244,36 @@ export default function BadgeSettingsModal({
           {/* TAB 2: DITHER & GRAPHICS PIPELINE */}
           {activeTab === 'graphics' && (
             <div className="space-y-4">
+              <div>
+                <label className="block text-zinc-400 mb-2">PORTRAIT STYLE</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onPortraitStyleChange('dither')}
+                    className={`border p-3 text-left ${
+                      portraitStyle === 'dither'
+                        ? 'border-emerald-400 bg-emerald-950/30'
+                        : 'border-zinc-800 bg-black/40'
+                    }`}
+                  >
+                    <span className="block font-bold text-zinc-100">Dither</span>
+                    <span className="block text-[10px] text-zinc-500">Floyd-Steinberg and the other classic algorithms</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onPortraitStyleChange('pixel-portrait')}
+                    className={`border p-3 text-left ${
+                      portraitStyle === 'pixel-portrait'
+                        ? 'border-emerald-400 bg-emerald-950/30'
+                        : 'border-zinc-800 bg-black/40'
+                    }`}
+                  >
+                    <span className="block font-bold text-zinc-100">Pixel portrait</span>
+                    <span className="block text-[10px] text-zinc-500">Clean outlines, six grays, cel-shaded face</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Auto-Exposure toggle */}
               <div className="flex items-center justify-between border border-emerald-500/40 bg-emerald-950/20 p-3">
                 <div className="flex items-center gap-2.5">

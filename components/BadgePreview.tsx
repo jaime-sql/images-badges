@@ -99,15 +99,16 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
     <div className="flex flex-col items-center gap-4">
       {/* Visual Canvas Container */}
       <div className="relative border-4 border-zinc-800 bg-black shadow-2xl p-2 max-w-full">
-        <canvas
-          ref={canvasRef}
-          className="pixelated block h-auto w-full max-w-[340px] md:max-w-[420px] lg:max-w-[460px] border border-zinc-900 shadow-inner"
-        />
+        <div className="relative mx-auto w-full max-w-[340px] md:max-w-[420px] lg:max-w-[460px]">
+          <canvas
+            ref={canvasRef}
+            className="pixelated block h-auto w-full border border-zinc-900 shadow-inner"
+          />
 
-        {/* Scanlines Effect */}
-        {showScanlines && (
-          <div className="pointer-events-none absolute inset-2 scanlines opacity-40 mix-blend-screen" />
-        )}
+          {showScanlines && (
+            <div className="pointer-events-none absolute inset-0 scanlines opacity-40 mix-blend-screen" />
+          )}
+        </div>
 
         {isRendering && (
           <div className="absolute top-4 right-4 bg-black/80 px-2 py-1 font-mono text-[10px] text-emerald-400 border border-emerald-500/40">
@@ -158,9 +159,11 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
       </div>
 
       <span className="font-mono text-[10px] text-zinc-500 text-center">
-        {badgeState.style === 'pixel-sprite'
-          ? '640x960 PNG // PIXEL SPRITE // 100% CLIENT-SIDE'
-          : '640x960 HIGH-RES PNG // 4-LEVEL DITHERED // 100% CLIENT-SIDE'}
+        {badgeState.portraitStyle === 'pixel-portrait'
+          ? '640x960 EVENT CARD // PIXEL PORTRAIT // 128 GRID'
+          : badgeState.style === 'pixel-sprite'
+            ? '640x960 PNG // PIXEL SPRITE // 100% CLIENT-SIDE'
+            : '640x960 HIGH-RES PNG // 4-LEVEL DITHERED // 100% CLIENT-SIDE'}
       </span>
     </div>
   );

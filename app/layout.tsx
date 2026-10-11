@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Press_Start_2P, Silkscreen } from "next/font/google";
+import { Geist, Geist_Mono, Inter, Press_Start_2P, Silkscreen } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -24,6 +24,11 @@ const silkscreen = Silkscreen({
   subsets: ["latin"],
 });
 
+const inter = Inter({
+  variable: "--font-inter",
+  subsets: ["latin", "latin-ext"],
+});
+
 export const metadata: Metadata = {
   title: "Badge Generator // Pixel Art Hackathon Pass",
   description: "Retro brutalist 4-level dithered hackathon badge generator",
@@ -39,7 +44,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} ${pressStart2P.variable} ${silkscreen.variable} h-full antialiased dark`}
+      className={`${geistSans.variable} ${geistMono.variable} ${pressStart2P.variable} ${silkscreen.variable} ${inter.variable} h-full antialiased dark`}
     >
       <head>
         <link

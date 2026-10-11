@@ -43,3 +43,24 @@ body {
   background-image: radial-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px);
   background-size: 20px 20px;
 }
+
+.pixel-spinner {
+  width: 14px;
+  height: 14px;
+  background-color: #0f0f12;
+  background-image:
+    linear-gradient(#f4f4f6 0 0),
+    linear-gradient(#6b6b73 0 0),
+    linear-gradient(#cfcfd4 0 0);
+  background-size: 6px 6px, 6px 6px, 6px 6px;
+  background-position: 0 0, 8px 0, 0 8px;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  animation: pixel-spin 0.6s steps(4) infinite;
+}
+
+@keyframes pixel-spin {
+  to {
+    transform: rotate(90deg);
+  }
+}

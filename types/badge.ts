@@ -83,6 +83,34 @@ export type BadgeTheme = 'dark-brutalist' | 'matrix-green' | 'amber-crt' | 'pape
 /** Classic 4-level dither badge, or the Game Boy pixel-sprite card. */
 export type BadgeStyle = 'classic' | 'pixel-sprite';
 
+/** Classic error-diffusion dither, or the illustrated pixel-portrait style. */
+export type PortraitStyle = 'dither' | 'pixel-portrait';
+
+export type PixelPortraitSource = 'ai' | 'fallback';
+
+/**
+ * Configurable event card. Defaults are generic and carry no third-party marks.
+ * The logo slot starts empty; organizers upload their own artwork.
+ */
+export interface EventCardConfig {
+  title: string;
+  subtitle: string;
+  role: string;
+  footer: string;
+  number: string;
+  /** Rasterized logo (PNG data URL). Never raw SVG markup. */
+  logoDataUrl: string | null;
+}
+
+export const DEFAULT_EVENT_CARD: EventCardConfig = {
+  title: 'MY EVENT 2026',
+  subtitle: 'Builder Badge',
+  role: 'Builder',
+  footer: '',
+  number: '#0001',
+  logoDataUrl: null,
+};
+
 export interface BadgeThemeConfig {
   id: BadgeTheme;
   name: string;
@@ -109,4 +137,12 @@ export interface BadgeState {
   /** Current segmentation processing state */
   segmentationStatus: 'idle' | 'processing' | 'success' | 'error';
   segmentationError?: string | null;
+  /** Dither keeps the classic card. Pixel portrait uses the event card. */
+  portraitStyle: PortraitStyle;
+  eventCard: EventCardConfig;
+  /** 512px nearest-neighbor portrait, ready to draw. */
+  pixelPortraitUrl: string | null;
+  pixelPortraitSource: PixelPortraitSource | null;
+  /** True when the Worker answered with the mock header. */
+  pixelPortraitMock: boolean;
 }

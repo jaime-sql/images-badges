@@ -12,8 +12,18 @@ export interface SegmentationProgress {
 }
 
 /**
+ * The onnxruntime wasm worker reads this level inside _OrtInit, including
+ * threads the page console cannot filter. @imgly only overwrites it when
+ * debug is on, which this call leaves off.
+ */
+async function quietOnnxRuntime(): Promise<void> {
+  const ort = await import('onnxruntime-web');
+  ort.env.logLevel = 'error';
+}
+
+/**
  * Remove image background in-browser using WebAssembly and deep learning models.
- * 
+ *
  * @param imageSource File, Blob, or image URL string
  * @param onProgress Optional callback to report download and inference progress
  * @returns Promise resolving to a Blob Object URL with background removed
@@ -27,7 +37,7 @@ export async function removeImageBackground(
   }
 
   try {
-    // Dynamic import to avoid any SSR evaluation
+    await quietOnnxRuntime();
     const { removeBackground } = await import('@imgly/background-removal');
 
     const blob = await removeBackground(imageSource, {
@@ -37,7 +47,7 @@ export async function removeImageBackground(
           onProgress({ key, current, total, percentage });
         }
       },
-      model: 'isnet_quint8', // Use quantized model for fast client-side inference
+      model: 'isnet_quint8',
     });
 
     return URL.createObjectURL(blob);
