@@ -23,6 +23,10 @@ head_sampling_rate = 1
 enabled = true
 head_sampling_rate = 1
 
-[[kv_namespaces]]
-binding = "PORTRAIT_KV"
-id = "00000000000000000000000000000000"
+[[durable_objects.bindings]]
+name = "PORTRAIT_QUOTA"
+class_name = "PortraitQuota"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PortraitQuota"]

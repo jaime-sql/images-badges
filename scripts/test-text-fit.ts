@@ -2,6 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fitCanvasText } from '../lib/text-fit.ts';
+import {
+  EVENT_BADGE_HEIGHT,
+  FALLBACK_LABEL_SIZE,
+  demoTagBox,
+  eventCardMetrics,
+  PANEL_BORDER,
+} from '../lib/event-badge.ts';
 import { configurePixelFont, pixelFontHasGlyph, shapePixelText } from '../lib/pixel-font.ts';
 import {
   FALLBACK_BADGE_LABEL,
@@ -36,6 +43,32 @@ test('long text shrinks to 70% and then ellipsizes', () => {
   assert.equal(fitted.scale, 0.7);
   assert.ok(fitted.text.endsWith('…'));
   assert.ok(measure(fitted.text, 0.7) <= 50);
+});
+
+test('name and role sit on the footer band with a bordered portrait panel', () => {
+  for (const fallback of [false, true]) {
+    const metrics = eventCardMetrics(fallback);
+    assert.equal(metrics.panelW > 400, true);
+    assert.equal(metrics.panelH > 400, true);
+    assert.equal(PANEL_BORDER, 2);
+    const roleGap = metrics.bottomBandY - metrics.roleBaseline;
+    assert.ok(roleGap > 8 && roleGap < 40, `footer gap ${roleGap}`);
+    assert.ok(metrics.nameY + 26 < metrics.roleBaseline);
+    assert.ok(metrics.panelY + metrics.panelH <= metrics.nameY);
+    assert.ok(metrics.bottomBandY + 76 <= EVENT_BADGE_HEIGHT);
+  }
+  assert.ok(FALLBACK_LABEL_SIZE >= 12);
+});
+
+test('DEMO tag sits in the portrait top-right, off the face', () => {
+  const portraitX = 40;
+  const portraitY = 120;
+  const side = 500;
+  const box = demoTagBox(portraitX, portraitY, side);
+  assert.ok(box.x > portraitX + side * 0.6);
+  assert.ok(box.x + box.w <= portraitX + side);
+  assert.ok(box.y >= portraitY);
+  assert.ok(box.y + box.h < portraitY + side * 0.25);
 });
 
 test('limit and fallback copy', () => {

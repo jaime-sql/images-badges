@@ -448,6 +448,7 @@ export async function composeBadge(state: BadgeState): Promise<HTMLCanvasElement
       eventCard: state.eventCard,
       portraitUrl: state.pixelPortraitUrl,
       showFallbackLabel: state.pixelPortraitSource === 'fallback',
+      showDemoTag: state.pixelPortraitMock,
     });
     return canvas;
   }

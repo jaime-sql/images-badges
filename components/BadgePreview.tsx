@@ -99,26 +99,21 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
     <div className="flex flex-col items-center gap-4">
       {/* Visual Canvas Container */}
       <div className="relative border-4 border-zinc-800 bg-black shadow-2xl p-2 max-w-full">
-        <canvas
-          ref={canvasRef}
-          className="pixelated block h-auto w-full max-w-[340px] md:max-w-[420px] lg:max-w-[460px] border border-zinc-900 shadow-inner"
-        />
+        <div className="relative mx-auto w-full max-w-[340px] md:max-w-[420px] lg:max-w-[460px]">
+          <canvas
+            ref={canvasRef}
+            className="pixelated block h-auto w-full border border-zinc-900 shadow-inner"
+          />
 
-        {/* Scanlines Effect */}
-        {showScanlines && (
-          <div className="pointer-events-none absolute inset-2 scanlines opacity-40 mix-blend-screen" />
-        )}
+          {showScanlines && (
+            <div className="pointer-events-none absolute inset-0 scanlines opacity-40 mix-blend-screen" />
+          )}
+        </div>
 
         {isRendering && (
           <div className="absolute top-4 right-4 bg-black/80 px-2 py-1 font-mono text-[10px] text-emerald-400 border border-emerald-500/40">
             RENDER_SYNC...
           </div>
-        )}
-
-        {badgeState.portraitStyle === 'pixel-portrait' && badgeState.pixelPortraitMock && (
-          <span className="absolute left-1/2 top-[38%] -translate-x-1/2 border border-white bg-black px-2 py-1 font-mono text-[11px] font-bold tracking-widest text-white">
-            DEMO
-          </span>
         )}
       </div>
 

@@ -6,6 +6,9 @@
 
 import { siteLimitMessage, visitorLimitMessage } from '../../lib/portrait-messages';
 import { mockPortraitPng } from './png';
+import { PortraitQuota, type QuotaDecision, type QuotaRequest } from './quota';
+
+export { PortraitQuota };
 
 export const PORTRAIT_PROMPT =
   'pixel art portrait, same person, grayscale, clean 1px outlines, cel shading, cartoon face, plain background';
@@ -15,13 +18,15 @@ export const ALLOWED_ORIGIN = 'https://jaime-sql.github.io';
 export const DEV_ORIGIN = 'http://localhost:3000';
 const OPENAI_EDITS_URL = 'https://api.openai.com/v1/images/edits';
 
-export interface PortraitKv {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+export interface PortraitQuotaNamespace {
+  idFromName(name: string): unknown;
+  get(id: unknown): {
+    fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+  };
 }
 
 export interface PortraitEnv {
-  PORTRAIT_KV: PortraitKv;
+  PORTRAIT_QUOTA: PortraitQuotaNamespace;
   OPENAI_API_KEY?: string;
   OPENAI_IMAGE_MODEL?: string;
   OPENAI_IMAGE_QUALITY?: string;
@@ -229,25 +234,12 @@ async function callOpenAi(
   return { bytes, usage };
 }
 
-interface GenerationSlot {
-  ipKey: string;
-  siteKey: string;
-  ipCount: number;
-  siteCount: number;
-}
+const QUOTA_OBJECT_NAME = 'quota';
 
-async function readSlot(env: PortraitEnv, ipHash: string, day: string): Promise<GenerationSlot> {
-  const ipKey = `ip:${ipHash}:${day}`;
-  const siteKey = `site:${day}`;
-  const ipCount = Number((await env.PORTRAIT_KV.get(ipKey)) || '0');
-  const siteCount = Number((await env.PORTRAIT_KV.get(siteKey)) || '0');
-  return { ipKey, siteKey, ipCount, siteCount };
-}
-
-function limitResponse(env: PortraitEnv, slot: GenerationSlot): Response | null {
-  const ipLimit = parsePositiveInt(env.PER_IP_DAILY_LIMIT, 5);
-  const siteLimit = parsePositiveInt(env.SITE_DAILY_LIMIT, 50);
-  if (slot.ipCount >= ipLimit) {
+function limitResponse(decision: QuotaDecision, env: PortraitEnv): Response | null {
+  if (decision === 'ok') return null;
+  if (decision === 'visitor_limit') {
+    const ipLimit = parsePositiveInt(env.PER_IP_DAILY_LIMIT, 5);
     const message = visitorLimitMessage(ipLimit);
     return jsonResponse(429, {
       error: 'visitor_limit',
@@ -256,22 +248,27 @@ function limitResponse(env: PortraitEnv, slot: GenerationSlot): Response | null 
       message_en: message.en,
     });
   }
-  if (slot.siteCount >= siteLimit) {
-    const message = siteLimitMessage();
-    return jsonResponse(429, {
-      error: 'site_limit',
-      limit: siteLimit,
-      message_es: message.es,
-      message_en: message.en,
-    });
-  }
-  return null;
+  const siteLimit = parsePositiveInt(env.SITE_DAILY_LIMIT, 50);
+  const message = siteLimitMessage();
+  return jsonResponse(429, {
+    error: 'site_limit',
+    limit: siteLimit,
+    message_es: message.es,
+    message_en: message.en,
+  });
 }
 
-async function commitSlot(env: PortraitEnv, slot: GenerationSlot): Promise<void> {
-  const ttl = 60 * 60 * 48;
-  await env.PORTRAIT_KV.put(slot.ipKey, String(slot.ipCount + 1), { expirationTtl: ttl });
-  await env.PORTRAIT_KV.put(slot.siteKey, String(slot.siteCount + 1), { expirationTtl: ttl });
+async function quotaFetch(env: PortraitEnv, body: QuotaRequest): Promise<QuotaDecision> {
+  const id = env.PORTRAIT_QUOTA.idFromName(QUOTA_OBJECT_NAME);
+  const stub = env.PORTRAIT_QUOTA.get(id);
+  const response = await stub.fetch('https://quota.internal/', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (body.op === 'release') return 'ok';
+  const payload = (await response.json()) as { result?: QuotaDecision };
+  return payload.result ?? 'visitor_limit';
 }
 
 export async function handlePortrait(request: Request, env: PortraitEnv): Promise<Response> {
@@ -312,11 +309,6 @@ export async function handlePortrait(request: Request, env: PortraitEnv): Promis
     );
   }
 
-  const ipHash = await hashIp(clientIp(request));
-  const slot = await readSlot(env, ipHash, utcDay());
-  const limited = limitResponse(env, slot);
-  if (limited) return withCors(limited, cors);
-
   const mock = isTruthyFlag(env.MOCK_OPENAI);
   if (!mock && !env.OPENAI_API_KEY) {
     return withCors(
@@ -329,7 +321,18 @@ export async function handlePortrait(request: Request, env: PortraitEnv): Promis
     );
   }
 
-  await commitSlot(env, slot);
+  const ipHash = await hashIp(clientIp(request));
+  const day = utcDay();
+  const quotaBody: QuotaRequest = {
+    op: 'reserve',
+    ipHash,
+    day,
+    ipLimit: parsePositiveInt(env.PER_IP_DAILY_LIMIT, 5),
+    siteLimit: parsePositiveInt(env.SITE_DAILY_LIMIT, 50),
+  };
+  const reserved = await quotaFetch(env, quotaBody);
+  const limited = limitResponse(reserved, env);
+  if (limited) return withCors(limited, cors);
 
   if (mock) {
     return withCors(pngResponse(mockPortraitPng(), true), cors);
@@ -339,6 +342,16 @@ export async function handlePortrait(request: Request, env: PortraitEnv): Promis
     const result = await callOpenAi(env, body.bytes);
     return withCors(pngResponse(result.bytes, false), cors);
   } catch (error) {
+    try {
+      await quotaFetch(env, { ...quotaBody, op: 'release' });
+    } catch (releaseError) {
+      console.error(
+        JSON.stringify({
+          message: 'quota_release_failed',
+          error: releaseError instanceof Error ? releaseError.message : 'unknown',
+        })
+      );
+    }
     console.error(
       JSON.stringify({
         message: 'portrait_failed',

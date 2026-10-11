@@ -9,17 +9,34 @@ import {
   isAllowedOrigin,
   PORTRAIT_PROMPT,
 } from '../worker/src/index.ts';
+import { PortraitQuota } from '../worker/src/quota.ts';
 import { encodeGrayPng, mockPortraitPng } from '../worker/src/png.ts';
 
-function memoryKv() {
-  const store = new Map();
+function lockingStorage(cells) {
+  let tail = Promise.resolve();
   return {
-    store,
-    async get(key) {
-      return store.has(key) ? store.get(key) : null;
-    },
-    async put(key, value) {
-      store.set(key, value);
+    transaction(fn) {
+      const previous = tail;
+      let release;
+      tail = new Promise((resolve) => {
+        release = resolve;
+      });
+      return previous.then(async () => {
+        try {
+          return await fn({
+            async get(key) {
+              await Promise.resolve();
+              return cells.has(key) ? cells.get(key) : undefined;
+            },
+            async put(key, value) {
+              await Promise.resolve();
+              cells.set(key, value);
+            },
+          });
+        } finally {
+          release();
+        }
+      });
     },
   };
 }
@@ -37,8 +54,22 @@ function pngRequest(ip, origin, bytes = mockPortraitPng()) {
 }
 
 function envWith(overrides = {}) {
+  const quotaCells = new Map();
+  const quota = new PortraitQuota({ storage: lockingStorage(quotaCells) }, {});
   return {
-    PORTRAIT_KV: memoryKv(),
+    PORTRAIT_QUOTA: {
+      idFromName() {
+        return 'quota';
+      },
+      get() {
+        return {
+          fetch(input, init) {
+            return quota.fetch(new Request(input, init));
+          },
+        };
+      },
+    },
+    quotaCells,
     OPENAI_API_KEY: 'sk-test',
     OPENAI_IMAGE_MODEL: 'gpt-image-1',
     OPENAI_IMAGE_QUALITY: 'low',
@@ -72,6 +103,11 @@ test('prompt, model, quality, and production config', () => {
   assert.match(toml, /SITE_DAILY_LIMIT = "50"/);
   assert.match(toml, /OPENAI_IMAGE_QUALITY = "low"/);
   assert.match(toml, /OPENAI_IMAGE_MODEL = "gpt-image-1"/);
+  assert.equal(/kv_namespaces/.test(toml), false);
+  assert.equal(/00000000000000000000000000000000/.test(toml), false);
+  assert.match(toml, /name = "PORTRAIT_QUOTA"/);
+  assert.match(toml, /class_name = "PortraitQuota"/);
+  assert.match(toml, /new_sqlite_classes = \["PortraitQuota"\]/);
 });
 
 test('mock mode returns a png and never calls OpenAI', async () => {
@@ -91,7 +127,7 @@ test('mock mode returns a png and never calls OpenAI', async () => {
     assert.equal(bytes[0], 137);
     assert.equal(bytes[1], 80);
     assert.equal(calls, 0);
-    assert.equal([...env.PORTRAIT_KV.store.values()].includes('1'), true);
+    assert.equal([...env.quotaCells.values()].includes(1), true);
   } finally {
     globalThis.fetch = original;
   }
@@ -155,7 +191,7 @@ test('oversized and non-png uploads never call OpenAI', async () => {
     });
     const tooBig = await handlePortrait(huge, env);
     assert.equal(tooBig.status, 413);
-    assert.equal(env.PORTRAIT_KV.store.size, 0);
+    assert.equal(env.quotaCells.size, 0);
 
     const text = new Request('https://portrait.example/portrait', {
       method: 'POST',
@@ -234,4 +270,32 @@ test('localhost preflight is refused unless DEV is set', async () => {
   );
   assert.equal(allowed.status, 204);
   assert.equal(allowed.headers.get('Access-Control-Allow-Origin'), 'http://localhost:3000');
+});
+
+test('20 concurrent requests against a cap of 5 succeed exactly 5 times', async () => {
+  const env = envWith({ PER_IP_DAILY_LIMIT: '5', SITE_DAILY_LIMIT: '50', MOCK_OPENAI: 'true' });
+  const responses = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      handlePortrait(pngRequest('203.0.113.77', 'https://jaime-sql.github.io'), env)
+    )
+  );
+  const statuses = await Promise.all(responses.map(async (response) => response.status));
+  assert.equal(statuses.filter((status) => status === 200).length, 5);
+  assert.equal(statuses.filter((status) => status === 429).length, 15);
+});
+
+test('a failed OpenAI call releases the reserved slot', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('upstream', { status: 500 });
+  try {
+    const env = envWith({ PER_IP_DAILY_LIMIT: '1', SITE_DAILY_LIMIT: '50' });
+    const first = await handlePortrait(pngRequest('203.0.113.80', 'https://jaime-sql.github.io'), env);
+    assert.equal(first.status, 502);
+    const second = await handlePortrait(pngRequest('203.0.113.80', 'https://jaime-sql.github.io'), env);
+    assert.equal(second.status, 502);
+    const body = await second.json();
+    assert.equal(body.error, 'upstream');
+  } finally {
+    globalThis.fetch = original;
+  }
 });

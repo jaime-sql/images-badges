@@ -16,6 +16,8 @@ import {
   renderPixelPortrait,
   downsampleNearest,
   frameHeadAndShoulders,
+  mergeTinyRegions,
+  cleanCutoutMask,
 } from '../lib/pixel-portrait.ts';
 import { createImageData } from '../lib/dither.ts';
 
@@ -224,6 +226,44 @@ test('head-and-shoulders crop puts the eyes near 40% from the top', () => {
   const ratio = bestRow / framed.height;
   assert.ok(ratio > 0.32 && ratio < 0.48, `eyes landed at ${ratio.toFixed(2)} of the frame`);
   assert.equal(framed.data[3], 0);
+});
+
+test('regions smaller than 6px merge into the neighboring gray', () => {
+  const tone = PIXEL_PALETTE[3];
+  const speck = PIXEL_PALETTE[0];
+  const image = solid(16, 16, tone.r, tone.g, tone.b);
+  setPixel(image, 8, 8, speck.r, speck.g, speck.b);
+  setPixel(image, 9, 8, speck.r, speck.g, speck.b);
+  setPixel(image, 8, 9, speck.r, speck.g, speck.b);
+  const merged = mergeTinyRegions(image, 6);
+  const i = (8 * 16 + 8) * 4;
+  assert.equal(merged.data[i], tone.r);
+  assert.equal(merged.data[i + 1], tone.g);
+  assert.equal(merged.data[i + 2], tone.b);
+});
+
+test('cut-out mask drops the stray line above the head', () => {
+  const image = solid(40, 40, 0, 0, 0, 0);
+  for (let y = 14; y <= 36; y++) {
+    for (let x = 10; x <= 30; x++) setPixel(image, x, y, 180, 170, 160);
+  }
+  for (let x = 12; x <= 28; x++) setPixel(image, x, 6, 200, 200, 200);
+  setPixel(image, 20, 5, 200, 200, 200, 40);
+  setPixel(image, 2, 2, 90, 90, 90);
+  setPixel(image, 3, 2, 90, 90, 90);
+  for (let y = 8; y <= 13; y++) setPixel(image, 20, y, 30, 30, 30);
+
+  const cleaned = cleanCutoutMask(image);
+  const alpha = (x, y) => cleaned.data[(y * 40 + x) * 4 + 3];
+  assert.equal(alpha(20, 6), 0);
+  assert.equal(alpha(20, 5), 0);
+  assert.equal(alpha(2, 2), 0);
+  assert.equal(alpha(20, 10), 0);
+  assert.equal(alpha(20, 24), 255);
+
+  const outlined = applyOutlines(posterize(cleaned));
+  const line = (20 * 40 + 6) * 4;
+  assert.equal(outlined.data[line + 3], 0);
 });
 
 test('downsample nearest keeps a flat field', () => {

@@ -1,8 +1,8 @@
 /**
  * Pixel-portrait post process.
  * 128×128 grid, six grays, no dither, 1px outline, 2px light rim, then ×4 nearest upscale.
- * The AI path quantizes a returned portrait. The browser fallback blurs, posterizes,
- * finds edges, and downsamples when that service is unset or fails.
+ * The AI path quantizes a returned portrait. The browser fallback smooths with
+ * several Kuwahara passes, posterizes to flat grays, and drops speckle.
  */
 
 import { createImageData } from './dither';
@@ -709,20 +709,318 @@ export function applyRim(source: ImageData): ImageData {
   return current;
 }
 
+/**
+ * Edge-preserving mean of the smoothest quadrant. Repeated passes turn a photo
+ * into flat cel regions without the blur of a box filter.
+ */
+export function kuwahara(source: ImageData, radius: number): ImageData {
+  const { width, height, data } = source;
+  const out = new Uint8ClampedArray(data);
+  const r = Math.max(1, radius);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixel = y * width + x;
+      if (!isOpaque(data, pixel)) continue;
+      let bestVar = Infinity;
+      let bestR = data[pixel * 4];
+      let bestG = data[pixel * 4 + 1];
+      let bestB = data[pixel * 4 + 2];
+      const quads = [
+        [x - r, x, y - r, y],
+        [x, x + r, y - r, y],
+        [x - r, x, y, y + r],
+        [x, x + r, y, y + r],
+      ];
+      for (const [x0, x1, y0, y1] of quads) {
+        let sumR = 0;
+        let sumG = 0;
+        let sumB = 0;
+        let sumL = 0;
+        let sumL2 = 0;
+        let n = 0;
+        const yStart = Math.max(0, y0);
+        const yEnd = Math.min(height - 1, y1);
+        const xStart = Math.max(0, x0);
+        const xEnd = Math.min(width - 1, x1);
+        for (let yy = yStart; yy <= yEnd; yy++) {
+          for (let xx = xStart; xx <= xEnd; xx++) {
+            const neighbor = yy * width + xx;
+            if (!isOpaque(data, neighbor)) continue;
+            const i = neighbor * 4;
+            const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            sumR += data[i];
+            sumG += data[i + 1];
+            sumB += data[i + 2];
+            sumL += lum;
+            sumL2 += lum * lum;
+            n += 1;
+          }
+        }
+        if (n < 4) continue;
+        const meanL = sumL / n;
+        const variance = sumL2 / n - meanL * meanL;
+        if (variance < bestVar) {
+          bestVar = variance;
+          bestR = Math.round(sumR / n);
+          bestG = Math.round(sumG / n);
+          bestB = Math.round(sumB / n);
+        }
+      }
+      const i = pixel * 4;
+      out[i] = bestR;
+      out[i + 1] = bestG;
+      out[i + 2] = bestB;
+    }
+  }
+  return createImageData(out, width, height);
+}
+
+/** Three shrinking Kuwahara passes. Stronger than a single box blur, edges stay. */
+export function smoothForDrawing(source: ImageData): ImageData {
+  let current = source;
+  for (const radius of [5, 4, 3]) current = kuwahara(current, radius);
+  return current;
+}
+
+/**
+ * Fold connected regions smaller than `minSize` into the neighboring gray.
+ * Isolated speckle on the 128 grid disappears; large flat shapes stay.
+ */
+export function mergeTinyRegions(source: ImageData, minSize = 6): ImageData {
+  const { width, height } = source;
+  const count = width * height;
+  let index = new Int16Array(count);
+  for (let pixel = 0; pixel < count; pixel++) index[pixel] = paletteIndexAt(source.data, pixel);
+
+  for (let pass = 0; pass < 4; pass++) {
+    const seen = new Uint8Array(count);
+    const next = new Int16Array(index);
+    const stack: number[] = [];
+    const region: number[] = [];
+    for (let start = 0; start < count; start++) {
+      if (seen[start] || index[start] < 0) continue;
+      stack.length = 0;
+      region.length = 0;
+      stack.push(start);
+      seen[start] = 1;
+      const color = index[start];
+      while (stack.length > 0) {
+        const pixel = stack.pop() as number;
+        region.push(pixel);
+        const x = pixel % width;
+        const y = (pixel - x) / width;
+        const neighbors = [
+          x > 0 ? pixel - 1 : -1,
+          x + 1 < width ? pixel + 1 : -1,
+          y > 0 ? pixel - width : -1,
+          y + 1 < height ? pixel + width : -1,
+        ];
+        for (const neighbor of neighbors) {
+          if (neighbor < 0 || seen[neighbor] || index[neighbor] !== color) continue;
+          seen[neighbor] = 1;
+          stack.push(neighbor);
+        }
+      }
+      if (region.length >= minSize) continue;
+      const votes = [0, 0, 0, 0, 0, 0];
+      for (const pixel of region) {
+        const x = pixel % width;
+        const y = (pixel - x) / width;
+        const neighbors = [
+          x > 0 ? pixel - 1 : -1,
+          x + 1 < width ? pixel + 1 : -1,
+          y > 0 ? pixel - width : -1,
+          y + 1 < height ? pixel + width : -1,
+        ];
+        for (const neighbor of neighbors) {
+          if (neighbor < 0) continue;
+          const other = index[neighbor];
+          if (other < 0 || other === color) continue;
+          votes[other] += 1;
+        }
+      }
+      let winner = -1;
+      let best = 0;
+      for (let tone = 0; tone < votes.length; tone++) {
+        if (votes[tone] > best) {
+          best = votes[tone];
+          winner = tone;
+        }
+      }
+      if (winner < 0) continue;
+      for (const pixel of region) next[pixel] = winner;
+    }
+    index = next;
+  }
+
+  const out = new Uint8ClampedArray(source.data);
+  for (let pixel = 0; pixel < count; pixel++) {
+    const i = pixel * 4;
+    const tone = index[pixel];
+    if (tone < 0) {
+      out[i] = 0;
+      out[i + 1] = 0;
+      out[i + 2] = 0;
+      out[i + 3] = 0;
+      continue;
+    }
+    const color = PIXEL_PALETTE[tone];
+    out[i] = color.r;
+    out[i + 1] = color.g;
+    out[i + 2] = color.b;
+    out[i + 3] = 255;
+  }
+  return createImageData(out, width, height);
+}
+
+const MASK_ALPHA = 128;
+const MASK_MIN_COMPONENT = 6;
+
+function erodeMask(mask: Uint8Array, width: number, height: number): Uint8Array {
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let keep = 1;
+      for (let dy = -1; dy <= 1 && keep; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= width || yy >= height || mask[yy * width + xx] === 0) {
+            keep = 0;
+            break;
+          }
+        }
+      }
+      out[y * width + x] = keep;
+    }
+  }
+  return out;
+}
+
+function dilateMask(mask: Uint8Array, width: number, height: number): Uint8Array {
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let on = 0;
+      for (let dy = -1; dy <= 1 && !on; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+          if (mask[yy * width + xx]) {
+            on = 1;
+            break;
+          }
+        }
+      }
+      out[y * width + x] = on;
+    }
+  }
+  return out;
+}
+
+function dropSmallComponents(mask: Uint8Array, width: number, height: number, minSize: number): void {
+  const seen = new Uint8Array(mask.length);
+  const stack: number[] = [];
+  const region: number[] = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (seen[start] || mask[start] === 0) continue;
+    stack.length = 0;
+    region.length = 0;
+    stack.push(start);
+    seen[start] = 1;
+    while (stack.length > 0) {
+      const pixel = stack.pop() as number;
+      region.push(pixel);
+      const x = pixel % width;
+      const y = (pixel - x) / width;
+      const neighbors = [
+        x > 0 ? pixel - 1 : -1,
+        x + 1 < width ? pixel + 1 : -1,
+        y > 0 ? pixel - width : -1,
+        y + 1 < height ? pixel + width : -1,
+      ];
+      for (const neighbor of neighbors) {
+        if (neighbor < 0 || seen[neighbor] || mask[neighbor] === 0) continue;
+        seen[neighbor] = 1;
+        stack.push(neighbor);
+      }
+    }
+    if (region.length >= minSize) continue;
+    for (const pixel of region) mask[pixel] = 0;
+  }
+}
+
+function dropThinProtrusions(mask: Uint8Array, width: number, height: number): void {
+  for (let pass = 0; pass < 6; pass++) {
+    const remove: number[] = [];
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const pixel = y * width + x;
+        if (mask[pixel] === 0) continue;
+        let neighbors = 0;
+        if (x > 0 && mask[pixel - 1]) neighbors += 1;
+        if (x + 1 < width && mask[pixel + 1]) neighbors += 1;
+        if (y > 0 && mask[pixel - width]) neighbors += 1;
+        if (y + 1 < height && mask[pixel + width]) neighbors += 1;
+        if (neighbors < 2) remove.push(pixel);
+      }
+    }
+    if (remove.length === 0) break;
+    for (const pixel of remove) mask[pixel] = 0;
+  }
+}
+
+/**
+ * Threshold the cut-out, open then close the mask, and drop specks and
+ * whiskers. A 1px stray line above the head never reaches the outline.
+ */
+export function cleanCutoutMask(source: ImageData): ImageData {
+  const { width, height, data } = source;
+  const count = width * height;
+  let transparent = 0;
+  const mask = new Uint8Array(count);
+  for (let pixel = 0; pixel < count; pixel++) {
+    if (data[pixel * 4 + 3] >= MASK_ALPHA) mask[pixel] = 1;
+    else transparent += 1;
+  }
+  if (transparent > count * 0.08) {
+    const opened = dilateMask(erodeMask(mask, width, height), width, height);
+    const closed = erodeMask(dilateMask(opened, width, height), width, height);
+    mask.set(closed);
+    dropSmallComponents(mask, width, height, MASK_MIN_COMPONENT);
+    dropThinProtrusions(mask, width, height);
+  }
+  const out = new Uint8ClampedArray(data);
+  for (let pixel = 0; pixel < count; pixel++) {
+    const i = pixel * 4;
+    if (mask[pixel]) {
+      out[i + 3] = 255;
+      continue;
+    }
+    out[i] = 0;
+    out[i + 1] = 0;
+    out[i + 2] = 0;
+    out[i + 3] = 0;
+  }
+  return createImageData(out, width, height);
+}
+
 export function renderPixelPortrait(
   source: ImageData,
   mode: PortraitProcessMode
 ): { grid: ImageData; output: ImageData } {
+  const cleaned = cleanCutoutMask(source);
   let prepared: ImageData;
   if (mode === 'ai') {
-    prepared = posterize(downsampleNearest(keyPlainBackground(source), PORTRAIT_GRID, PORTRAIT_GRID));
+    prepared = posterize(downsampleNearest(keyPlainBackground(cleaned), PORTRAIT_GRID, PORTRAIT_GRID));
   } else {
-    const framed = frameHeadAndShoulders(source, FALLBACK_WORKING);
-    const blurred = boxBlur(framed, 1);
-    const contrasted = applyLocalContrast(blurred);
-    const lit = applyCelLight(contrasted);
+    const framed = frameHeadAndShoulders(cleaned, FALLBACK_WORKING);
+    const contrasted = applyLocalContrast(framed);
+    const smoothed = smoothForDrawing(contrasted);
+    const lit = applyCelLight(smoothed);
     const posted = posterizeFromForeground(lit);
-    prepared = downsampleNearest(posted, PORTRAIT_GRID, PORTRAIT_GRID);
+    prepared = mergeTinyRegions(downsampleNearest(posted, PORTRAIT_GRID, PORTRAIT_GRID), 6);
   }
   const outlined = applyOutlines(prepared);
   const grid = applyRim(outlined);

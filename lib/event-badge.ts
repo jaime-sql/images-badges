@@ -1,8 +1,8 @@
 /**
  * Event card, 640×960.
- * Top band: optional logo (max 64px) and title, then subtitle.
- * Portrait panel: light gray, 2px dark border.
- * Name and role, then a bottom band with footer and number.
+ * Top band: logo slot (max 64px) on the left, title and subtitle beside it.
+ * Portrait panel: light gray, 2px #0F0F12 border, filling the space above the name.
+ * Name and role sit directly under the panel. Bottom band holds footer and number.
  */
 
 import { FALLBACK_BADGE_LABEL } from './portrait-messages';
@@ -19,6 +19,51 @@ const PANEL = '#E4E4E8';
 const BORDER = '#0F0F12';
 const CARD = '#141418';
 const BAND = '#101014';
+
+export const EVENT_TOP_BAND = 104;
+export const EVENT_BOTTOM_BAND = 76;
+export const EVENT_SIDE = 32;
+export const PANEL_BORDER = 2;
+/** Canvas pixels. The fallback line stays at least 12px. */
+export const FALLBACK_LABEL_SIZE = 16;
+const LOGO_MAX = 64;
+const DEMO_TAG_SIZE = 12;
+
+export interface EventCardMetrics {
+  panelX: number;
+  panelY: number;
+  panelW: number;
+  panelH: number;
+  nameY: number;
+  roleBaseline: number;
+  labelY: number | null;
+  bottomBandY: number;
+  canvasW: number;
+  canvasH: number;
+}
+
+/** Geometry for the event card. The name block is pinned to the footer band. */
+export function eventCardMetrics(showFallbackLabel: boolean): EventCardMetrics {
+  const nameSize = 26;
+  const labelBlock = showFallbackLabel ? FALLBACK_LABEL_SIZE + 24 : 16;
+  const bottomBandY = EVENT_BADGE_HEIGHT - EVENT_BOTTOM_BAND;
+  const roleBaseline = bottomBandY - 18;
+  const nameY = roleBaseline - 30 - nameSize;
+  const panelBottom = nameY - labelBlock;
+  const panelY = EVENT_TOP_BAND + 12;
+  return {
+    panelX: EVENT_SIDE,
+    panelY,
+    panelW: EVENT_BADGE_WIDTH - EVENT_SIDE * 2,
+    panelH: panelBottom - panelY,
+    nameY,
+    roleBaseline,
+    labelY: showFallbackLabel ? panelBottom + 4 : null,
+    bottomBandY,
+    canvasW: EVENT_BADGE_WIDTH,
+    canvasH: EVENT_BADGE_HEIGHT,
+  };
+}
 
 function cssFamily(variable: string, fallback: string): string {
   if (typeof document === 'undefined') return fallback;
@@ -113,6 +158,7 @@ export async function renderEventCard(
     eventCard: EventCardConfig;
     portraitUrl: string | null;
     showFallbackLabel: boolean;
+    showDemoTag: boolean;
   }
 ): Promise<void> {
   const ctx = canvas.getContext('2d');
@@ -125,13 +171,17 @@ export async function renderEventCard(
   canvas.width = EVENT_BADGE_WIDTH;
   canvas.height = EVENT_BADGE_HEIGHT;
 
+  const metrics = eventCardMetrics(options.showFallbackLabel);
+  const textX = EVENT_SIDE + LOGO_MAX + 16;
+  const textW = EVENT_BADGE_WIDTH - EVENT_SIDE - textX;
+
   ctx.fillStyle = CARD;
   ctx.fillRect(0, 0, EVENT_BADGE_WIDTH, EVENT_BADGE_HEIGHT);
-  ctx.textBaseline = 'alphabetic';
 
-  const margin = 40;
-  const contentW = EVENT_BADGE_WIDTH - margin * 2;
-  let y = 56;
+  ctx.fillStyle = BAND;
+  ctx.fillRect(0, 0, EVENT_BADGE_WIDTH, EVENT_TOP_BAND);
+  ctx.fillStyle = BORDER;
+  ctx.fillRect(0, EVENT_TOP_BAND - PANEL_BORDER, EVENT_BADGE_WIDTH, PANEL_BORDER);
 
   let logo: HTMLImageElement | null = null;
   if (options.eventCard.logoDataUrl) {
@@ -142,97 +192,159 @@ export async function renderEventCard(
     }
   }
 
+  const logoY = Math.round((EVENT_TOP_BAND - LOGO_MAX) / 2);
   if (logo) {
-    const box = 64;
-    const scale = Math.min(box / logo.width, box / logo.height);
+    const scale = Math.min(LOGO_MAX / logo.width, LOGO_MAX / logo.height);
     const dw = Math.max(1, logo.width * scale);
     const dh = Math.max(1, logo.height * scale);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(logo, margin, y, dw, dh);
-    const textX = margin + box + 16;
-    const textW = contentW - box - 16;
-    const titleSize = drawPixelLine(ctx, options.eventCard.title, textX, y + 4, textW, 18, INK, 'left');
-    ctx.fillStyle = MUTED;
-    drawFitted(ctx, options.eventCard.subtitle, textX, y + 4 + titleSize + 18, textW, 16, textFont, 'left');
-    y += box + 28;
-  } else {
-    const titleSize = drawPixelLine(ctx, options.eventCard.title, margin, y, contentW, 22, INK, 'left');
-    y += titleSize + 16;
-    ctx.fillStyle = MUTED;
-    drawFitted(ctx, options.eventCard.subtitle, margin, y, contentW, 18, textFont, 'left');
-    y += 28;
+    ctx.drawImage(logo, EVENT_SIDE, logoY + (LOGO_MAX - dh) / 2, dw, dh);
   }
 
-  const panel = 516;
-  const panelX = Math.round((EVENT_BADGE_WIDTH - panel) / 2);
-  const panelY = y;
+  const titleSize = drawPixelLine(ctx, options.eventCard.title, textX, logoY + 8, textW, 18, INK, 'left');
+  ctx.fillStyle = MUTED;
+  drawFitted(
+    ctx,
+    options.eventCard.subtitle,
+    textX,
+    logoY + 8 + titleSize + 20,
+    textW,
+    16,
+    textFont,
+    'left'
+  );
+
+  const { panelX, panelY, panelW, panelH } = metrics;
   ctx.fillStyle = BORDER;
-  ctx.fillRect(panelX, panelY, panel, panel);
+  ctx.fillRect(panelX, panelY, panelW, panelH);
   ctx.fillStyle = PANEL;
-  ctx.fillRect(panelX + 2, panelY + 2, panel - 4, panel - 4);
+  ctx.fillRect(
+    panelX + PANEL_BORDER,
+    panelY + PANEL_BORDER,
+    panelW - PANEL_BORDER * 2,
+    panelH - PANEL_BORDER * 2
+  );
+
+  const innerX = panelX + PANEL_BORDER;
+  const innerY = panelY + PANEL_BORDER;
+  const innerW = panelW - PANEL_BORDER * 2;
+  const innerH = panelH - PANEL_BORDER * 2;
+  const portraitSide = Math.min(innerW, innerH);
+  const portraitX = innerX + (innerW - portraitSide) / 2;
+  const portraitY = innerY + (innerH - portraitSide) / 2;
 
   if (options.portraitUrl) {
     try {
       const portrait = await loadImage(options.portraitUrl);
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(portrait, panelX + 2, panelY + 2, panel - 4, panel - 4);
+      ctx.drawImage(portrait, portraitX, portraitY, portraitSide, portraitSide);
     } catch {
-      drawEmptyPortrait(ctx, panelX, panelY, panel, textFont);
+      drawEmptyPortrait(ctx, panelX, panelY, panelW, panelH, textFont);
     }
   } else {
-    drawEmptyPortrait(ctx, panelX, panelY, panel, textFont);
+    drawEmptyPortrait(ctx, panelX, panelY, panelW, panelH, textFont);
   }
 
-  y = panelY + panel + 22;
-  if (options.showFallbackLabel) {
+  if (options.showDemoTag) {
+    drawDemoTag(ctx, portraitX, portraitY, portraitSide);
+  }
+
+  if (metrics.labelY != null) {
     ctx.fillStyle = MUTED;
-    ctx.font = `12px ${textFont}`;
+    ctx.font = `${FALLBACK_LABEL_SIZE}px ${textFont}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText(FALLBACK_BADGE_LABEL, margin, y);
-    // The label sits under the panel. The gap below it clears the name and the accent marks.
-    y += 12 + 36;
-  } else {
-    y += 14;
+    ctx.fillText(FALLBACK_BADGE_LABEL, EVENT_SIDE, metrics.labelY);
   }
 
   const name = options.name.trim() || 'YOUR NAME';
   const nameColor = options.name.trim() ? INK : '#8A8A94';
-  const nameSize = drawPixelLine(ctx, name, margin, y, contentW, 26, nameColor, 'left');
-  y += nameSize + 20;
+  drawPixelLine(ctx, name, EVENT_SIDE, metrics.nameY, EVENT_BADGE_WIDTH - EVENT_SIDE * 2, 26, nameColor, 'left');
   ctx.fillStyle = MUTED;
-  drawFitted(ctx, options.eventCard.role, margin, y, contentW, 18, textFont, 'left');
+  drawFitted(
+    ctx,
+    options.eventCard.role,
+    EVENT_SIDE,
+    metrics.roleBaseline,
+    EVENT_BADGE_WIDTH - EVENT_SIDE * 2,
+    18,
+    textFont,
+    'left'
+  );
 
-  const bandY = EVENT_BADGE_HEIGHT - 84;
   ctx.fillStyle = BAND;
-  ctx.fillRect(0, bandY, EVENT_BADGE_WIDTH, 84);
+  ctx.fillRect(0, metrics.bottomBandY, EVENT_BADGE_WIDTH, EVENT_BOTTOM_BAND);
   ctx.fillStyle = BORDER;
-  ctx.fillRect(0, bandY, EVENT_BADGE_WIDTH, 2);
+  ctx.fillRect(0, metrics.bottomBandY, EVENT_BADGE_WIDTH, PANEL_BORDER);
 
-  drawPixelLine(ctx, options.eventCard.footer, margin, bandY + 34, contentW * 0.62, 12, MUTED, 'left');
+  const footerW = (EVENT_BADGE_WIDTH - EVENT_SIDE * 2) * 0.62;
+  drawPixelLine(
+    ctx,
+    options.eventCard.footer,
+    EVENT_SIDE,
+    metrics.bottomBandY + 30,
+    footerW,
+    12,
+    MUTED,
+    'left'
+  );
   drawPixelLine(
     ctx,
     options.eventCard.number,
-    EVENT_BADGE_WIDTH - margin,
-    bandY + 30,
-    contentW * 0.32,
+    EVENT_BADGE_WIDTH - EVENT_SIDE,
+    metrics.bottomBandY + 26,
+    (EVENT_BADGE_WIDTH - EVENT_SIDE * 2) * 0.32,
     16,
     INK,
     'right'
   );
 }
 
+/** Top-right corner of the portrait square, inset so it sits off the face. */
+export function demoTagBox(
+  portraitX: number,
+  portraitY: number,
+  portraitSide: number
+): { x: number; y: number; w: number; h: number } {
+  const textW = 'DEMO'.length * DEMO_TAG_SIZE;
+  const w = textW + 16;
+  const h = DEMO_TAG_SIZE + 12;
+  return {
+    x: Math.round(portraitX + portraitSide - w - 10),
+    y: Math.round(portraitY + 10),
+    w,
+    h,
+  };
+}
+
+function drawDemoTag(
+  ctx: CanvasRenderingContext2D,
+  portraitX: number,
+  portraitY: number,
+  portraitSide: number
+): void {
+  const box = demoTagBox(portraitX, portraitY, portraitSide);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(box.x + 1, box.y + 1, box.w - 2, box.h - 2);
+  drawPixelText(ctx, 'DEMO', box.x + 8, box.y + 6, DEMO_TAG_SIZE, '#FFFFFF', 'left', 'top');
+}
+
 function drawEmptyPortrait(
   ctx: CanvasRenderingContext2D,
   panelX: number,
   panelY: number,
-  panel: number,
+  panelW: number,
+  panelH: number,
   textFont: string
 ): void {
   ctx.fillStyle = '#6B6B73';
   ctx.font = `16px ${textFont}`;
   ctx.textAlign = 'center';
-  ctx.fillText('NO PORTRAIT', panelX + panel / 2, panelY + panel / 2);
+  ctx.textBaseline = 'middle';
+  ctx.fillText('NO PORTRAIT', panelX + panelW / 2, panelY + panelH / 2);
   ctx.textAlign = 'left';
 }
