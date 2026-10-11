@@ -205,17 +205,19 @@ test('head-and-shoulders crop puts the eyes near 40% from the top', () => {
   for (let x = 32; x < 36; x++) setPixel(image, x, eyeY, 12, 12, 16);
 
   const framed = frameHeadAndShoulders(image, 80);
-  let best = -1;
+  let bestMin = 256;
   let bestRow = 0;
   for (let y = 0; y < framed.height; y++) {
-    let dark = 0;
+    let min = 256;
+    let opaque = 0;
     for (let x = 0; x < framed.width; x++) {
       const i = (y * framed.width + x) * 4;
       if (framed.data[i + 3] < 20) continue;
-      if (framed.data[i] < 40) dark += 1;
+      opaque += 1;
+      min = Math.min(min, framed.data[i]);
     }
-    if (dark > best) {
-      best = dark;
+    if (opaque > 0 && min < bestMin) {
+      bestMin = min;
       bestRow = y;
     }
   }

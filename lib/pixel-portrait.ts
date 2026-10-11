@@ -257,31 +257,37 @@ function estimateEyeAndCrop(
   maxY: number
 ): { cropX: number; cropY: number; cropW: number; cropH: number; eyeInCrop: number } {
   const rows = maxY - minY + 1;
-  const topLimit = minY + Math.max(1, Math.floor(rows * 0.22));
-  let topSpan = 0;
-  let topCount = 0;
+  const topLimit = minY + Math.max(1, Math.floor(rows * 0.18));
+  const topSpans: number[] = [];
   for (let y = minY; y <= topLimit; y++) {
-    topSpan += opaqueSpan(data, width, y, minX, maxX);
-    topCount += 1;
+    topSpans.push(opaqueSpan(data, width, y, minX, maxX));
   }
-  const topAvg = topCount > 0 ? topSpan / topCount : 0;
+  topSpans.sort((a, b) => a - b);
+  const headWidth = topSpans[Math.floor(topSpans.length / 2)] ?? 1;
 
-  const search = minY + Math.floor(rows * 0.28);
-  let shoulderY = Math.min(maxY, minY + Math.floor(rows * 0.62));
-  let shoulderSpan = -1;
+  // The shoulder line is the first widening under the head. The widest row is
+  // often the bottom of a jacket, which would push the eyes too high.
+  const search = minY + Math.floor(rows * 0.2);
+  let shoulderY = -1;
+  let run = 0;
   for (let y = search; y <= maxY; y++) {
     const span = opaqueSpan(data, width, y, minX, maxX);
-    if (span > shoulderSpan) {
-      shoulderSpan = span;
-      shoulderY = y;
+    if (span > headWidth * 1.28) {
+      run += 1;
+      if (run >= 3) {
+        shoulderY = y - 2;
+        break;
+      }
+    } else {
+      run = 0;
     }
   }
 
-  const hasShoulders = shoulderSpan > topAvg * 1.22 && shoulderY > minY + 4;
-  const eyeAbs = hasShoulders ? minY + (shoulderY - minY) * 0.45 : minY + rows * 0.36;
+  const hasShoulders = shoulderY > minY + 4;
+  const eyeAbs = hasShoulders ? minY + (shoulderY - minY) * 0.46 : minY + Math.min(rows, headWidth * 1.15) * 0.4;
   const cropBottom = hasShoulders
-    ? Math.min(maxY, Math.round(shoulderY + (shoulderY - minY) * 0.42))
-    : maxY;
+    ? Math.min(maxY, Math.round(shoulderY + (shoulderY - minY) * 0.55))
+    : Math.min(maxY, minY + Math.round(Math.max(rows * 0.72, headWidth * 1.2)));
 
   let left = maxX;
   let right = minX;
