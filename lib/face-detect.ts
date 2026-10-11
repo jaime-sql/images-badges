@@ -16,10 +16,30 @@ function modelUrl(): string {
   return `${base}/models/blaze_face_full_range.tflite`;
 }
 
+/**
+ * "Created TensorFlow Lite XNNPACK delegate for CPU." is stderr from the
+ * vision wasm module. FilesetResolver forwards globalThis.Module.printErr
+ * into that module, including after the page console filter is gone.
+ */
+function quietXnnpackDelegateLog(): void {
+  const host = globalThis as typeof globalThis & {
+    Module?: { printErr?: (...args: unknown[]) => void };
+  };
+  host.Module = {
+    ...host.Module,
+    printErr: (...args: unknown[]) => {
+      const text = args.map((item) => String(item)).join(' ');
+      if (text.includes('XNNPACK')) return;
+      console.error(...args);
+    },
+  };
+}
+
 async function loadDetector(): Promise<FaceDetector | null> {
   if (!loading) {
     loading = (async () => {
       try {
+        quietXnnpackDelegateLog();
         const vision = await import('@mediapipe/tasks-vision');
         const wasm = await vision.FilesetResolver.forVisionTasks(WASM_URL);
         return await vision.FaceDetector.createFromOptions(wasm, {

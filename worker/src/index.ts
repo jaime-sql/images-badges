@@ -45,8 +45,8 @@ export function parsePositiveInt(value: string | undefined, fallback: number): n
 
 export function resolveModel(value: string | undefined): 'gpt-image-1' | 'gpt-image-1-mini' {
   const model = (value || '').trim();
-  if (model === 'gpt-image-1-mini') return 'gpt-image-1-mini';
-  return 'gpt-image-1';
+  if (model === 'gpt-image-1') return 'gpt-image-1';
+  return 'gpt-image-1-mini';
 }
 
 export function resolveQuality(value: string | undefined): 'low' | 'medium' | 'high' {

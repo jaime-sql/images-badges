@@ -2,18 +2,24 @@ Client-side pixel badge generator. The classic dither styles stay in the browser
 
 ## Portrait cost
 
-Each generation is one 1024×1024 Images edit. Quality defaults to `low` (`OPENAI_IMAGE_QUALITY`). At 1024×1024, output is 272 tokens for low and 1056 tokens for medium (OpenAI pricing page and image guide, 2026-10-11).
+Each generation is one 1024×1024 Images edit. The Worker defaults to `gpt-image-1-mini` at quality `low` (`OPENAI_IMAGE_MODEL` and `OPENAI_IMAGE_QUALITY` in `worker/wrangler.toml`). At 1024×1024, output is 272 tokens for low and 1056 tokens for medium (OpenAI pricing page and image guide, 2026-10-11).
 
 Image and text input tokens are extra and depend on the photo. They are logged as `input_tokens` and `output_tokens` on each generation.
 
 | Model | Output price | PRICE_PER_IMAGE_LOW | PRICE_PER_IMAGE_MEDIUM |
 | --- | --- | --- | --- |
-| gpt-image-1 (`OPENAI_IMAGE_MODEL` default) | $40 / 1M output tokens | $0.011 | $0.042 |
-| gpt-image-1-mini | $8 / 1M output tokens | $0.002 | $0.008 |
+| gpt-image-1-mini (`OPENAI_IMAGE_MODEL` default) | $8 / 1M output tokens | $0.002 | $0.008 |
+| gpt-image-1 | $40 / 1M output tokens | $0.011 | $0.042 |
 
-Caps, counted in one Durable Object per UTC day: `PER_IP_DAILY_LIMIT` (default 5) per visitor IP hash, and `SITE_DAILY_LIMIT` (default 50) for the whole site. The object reserves a slot atomically before the image call, so parallel requests cannot share one read and slip past the cap. If the image call fails, that reservation is released and the slot can be used again. A successful image, including mock mode, keeps the slot. At 50 a day that is about 1,500 a month. gpt-image-1 low output comes to about $16 a month before input tokens.
+Caps, counted in one Durable Object per UTC day: `PER_IP_DAILY_LIMIT` (default 5) per visitor IP hash, and `SITE_DAILY_LIMIT` (default 50) for the whole site. The object reserves a slot atomically before the image call, so parallel requests cannot share one read and slip past the cap. If the image call fails, that reservation is released and the slot can be used again. A successful image, including mock mode, keeps the slot. At 50 a day that is about 1,500 a month. The default mini model at low quality is about $3 a month in output tokens (1,500 × $0.002) before input tokens. Set `OPENAI_IMAGE_MODEL = "gpt-image-1"` and `OPENAI_IMAGE_QUALITY = "medium"` in `worker/wrangler.toml` to switch without a code change. gpt-image-1 at low quality is about $16 a month at the same cap.
 
-`OPENAI_API_KEY` is a Worker secret (`wrangler secret put OPENAI_API_KEY`). It is never sent to the browser. The site only reads `NEXT_PUBLIC_PORTRAIT_API_URL` (the full `https://<worker>/portrait` URL). There is no sign-in and no server-side image storage.
+The Worker calls OpenAI as soon as the API key secret exists. From the `worker/` directory:
+
+```bash
+npx wrangler secret put OPENAI_API_KEY
+```
+
+The key stays on the Worker. It is never sent to the browser. The site only reads `NEXT_PUBLIC_PORTRAIT_API_URL` (the full `https://<worker>/portrait` URL). There is no sign-in and no server-side image storage.
 
 `MOCK_OPENAI` defaults to false and is not set in `worker/wrangler.toml`. For a free local check, put `MOCK_OPENAI=true` and `DEV=true` in `worker/.dev.vars`. Mock replies include `X-Portrait-Mock: 1`, and the downloaded badge burns a DEMO tag into the top-right of the portrait. `DEV=true` also allows `http://localhost:3000` in CORS. Production CORS is only `https://jaime-sql.github.io`.
 

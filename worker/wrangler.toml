@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 # Do not put it in this file. Mock mode is off unless a local .dev.vars sets it.
 
 [vars]
-OPENAI_IMAGE_MODEL = "gpt-image-1"
+OPENAI_IMAGE_MODEL = "gpt-image-1-mini"
 OPENAI_IMAGE_QUALITY = "low"
 PER_IP_DAILY_LIMIT = "5"
 SITE_DAILY_LIMIT = "50"

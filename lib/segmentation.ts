@@ -12,36 +12,22 @@ export interface SegmentationProgress {
 }
 
 /**
+ * The onnxruntime wasm worker reads this level inside _OrtInit, including
+ * threads the page console cannot filter. @imgly only overwrites it when
+ * debug is on, which this call leaves off.
+ */
+async function quietOnnxRuntime(): Promise<void> {
+  const ort = await import('onnxruntime-web');
+  ort.env.logLevel = 'error';
+}
+
+/**
  * Remove image background in-browser using WebAssembly and deep learning models.
- * 
+ *
  * @param imageSource File, Blob, or image URL string
  * @param onProgress Optional callback to report download and inference progress
  * @returns Promise resolving to a Blob Object URL with background removed
  */
-let xnnpackFilterDepth = 0;
-let savedConsoleError: typeof console.error | null = null;
-
-function pushXnnpackFilter(): void {
-  if (xnnpackFilterDepth === 0) {
-    savedConsoleError = console.error;
-    const original = savedConsoleError;
-    console.error = (...args: unknown[]) => {
-      const text = args.map((item) => String(item)).join(' ');
-      if (text.includes('XNNPACK')) return;
-      original.apply(console, args);
-    };
-  }
-  xnnpackFilterDepth += 1;
-}
-
-function popXnnpackFilter(): void {
-  xnnpackFilterDepth = Math.max(0, xnnpackFilterDepth - 1);
-  if (xnnpackFilterDepth === 0 && savedConsoleError) {
-    console.error = savedConsoleError;
-    savedConsoleError = null;
-  }
-}
-
 export async function removeImageBackground(
   imageSource: Blob | File | string,
   onProgress?: (progress: SegmentationProgress) => void
@@ -50,11 +36,8 @@ export async function removeImageBackground(
     throw new Error('Background removal is only available client-side in the browser');
   }
 
-  const previousError = console.error;
-  pushXnnpackFilter();
-
   try {
-    // Dynamic import to avoid any SSR evaluation
+    await quietOnnxRuntime();
     const { removeBackground } = await import('@imgly/background-removal');
 
     const blob = await removeBackground(imageSource, {
@@ -64,18 +47,16 @@ export async function removeImageBackground(
           onProgress({ key, current, total, percentage });
         }
       },
-      model: 'isnet_quint8', // Use quantized model for fast client-side inference
+      model: 'isnet_quint8',
     });
 
     return URL.createObjectURL(blob);
   } catch (error) {
-    previousError.call(console, 'Failed to segment background:', error);
+    console.error('Failed to segment background:', error);
     throw new Error(
       error instanceof Error
         ? error.message
         : 'Background segmentation failed. Please check browser WebAssembly support.'
     );
-  } finally {
-    popXnnpackFilter();
   }
 }

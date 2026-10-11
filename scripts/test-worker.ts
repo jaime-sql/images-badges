@@ -71,7 +71,7 @@ function envWith(overrides = {}) {
     },
     quotaCells,
     OPENAI_API_KEY: 'sk-test',
-    OPENAI_IMAGE_MODEL: 'gpt-image-1',
+    OPENAI_IMAGE_MODEL: 'gpt-image-1-mini',
     OPENAI_IMAGE_QUALITY: 'low',
     PER_IP_DAILY_LIMIT: '5',
     SITE_DAILY_LIMIT: '50',
@@ -84,9 +84,10 @@ test('prompt, model, quality, and production config', () => {
     PORTRAIT_PROMPT,
     'pixel art portrait, same person, grayscale, clean 1px outlines, cel shading, cartoon face, plain background'
   );
-  assert.equal(resolveModel(undefined), 'gpt-image-1');
+  assert.equal(resolveModel(undefined), 'gpt-image-1-mini');
   assert.equal(resolveModel('gpt-image-1-mini'), 'gpt-image-1-mini');
-  assert.equal(resolveModel('gpt-4'), 'gpt-image-1');
+  assert.equal(resolveModel('gpt-image-1'), 'gpt-image-1');
+  assert.equal(resolveModel('gpt-4'), 'gpt-image-1-mini');
   assert.equal(resolveQuality(undefined), 'low');
   assert.equal(resolveQuality('medium'), 'medium');
   assert.equal(resolveQuality('ultra'), 'low');
@@ -102,7 +103,8 @@ test('prompt, model, quality, and production config', () => {
   assert.match(toml, /PER_IP_DAILY_LIMIT = "5"/);
   assert.match(toml, /SITE_DAILY_LIMIT = "50"/);
   assert.match(toml, /OPENAI_IMAGE_QUALITY = "low"/);
-  assert.match(toml, /OPENAI_IMAGE_MODEL = "gpt-image-1"/);
+  assert.match(toml, /OPENAI_IMAGE_MODEL = "gpt-image-1-mini"/);
+  assert.match(toml, /wrangler secret put OPENAI_API_KEY/);
   assert.equal(/kv_namespaces/.test(toml), false);
   assert.equal(/00000000000000000000000000000000/.test(toml), false);
   assert.match(toml, /name = "PORTRAIT_QUOTA"/);
@@ -212,9 +214,10 @@ test('a real generation sends one 1024 image at low quality and logs usage', asy
   console.log = (...args) => logs.push(args.map(String).join(' '));
   const png = mockPortraitPng();
   const original = globalThis.fetch;
+  let expectedModel = 'gpt-image-1-mini';
   globalThis.fetch = async (_url, init) => {
     const form = init.body;
-    assert.equal(form.get('model'), 'gpt-image-1-mini');
+    assert.equal(form.get('model'), expectedModel);
     assert.equal(form.get('quality'), 'low');
     assert.equal(form.get('size'), '1024x1024');
     assert.equal(form.get('n'), '1');
@@ -228,7 +231,7 @@ test('a real generation sends one 1024 image at low quality and logs usage', asy
     );
   };
   try {
-    const env = envWith({ OPENAI_IMAGE_MODEL: 'gpt-image-1-mini' });
+    const env = envWith();
     const response = await handlePortrait(
       pngRequest('203.0.113.50', 'http://localhost:3000'),
       env
@@ -236,7 +239,14 @@ test('a real generation sends one 1024 image at low quality and logs usage', asy
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('X-Portrait-Mock'), null);
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), null);
-    const devEnv = envWith({ OPENAI_IMAGE_MODEL: 'gpt-image-1-mini', DEV: 'true' });
+    expectedModel = 'gpt-image-1';
+    const switched = await handlePortrait(
+      pngRequest('203.0.113.52', 'https://jaime-sql.github.io'),
+      envWith({ OPENAI_IMAGE_MODEL: 'gpt-image-1' })
+    );
+    assert.equal(switched.status, 200);
+    expectedModel = 'gpt-image-1-mini';
+    const devEnv = envWith({ DEV: 'true' });
     const devResponse = await handlePortrait(
       pngRequest('203.0.113.51', 'http://localhost:3000'),
       devEnv
