@@ -3,6 +3,7 @@
  * Canvas scaling of the finished grid disables smoothing.
  */
 
+import { detectFaceBox } from './face-detect';
 import { renderPixelPortrait, type PortraitProcessMode } from './pixel-portrait';
 
 function loadImage(url: string): Promise<HTMLImageElement> {
@@ -50,7 +51,8 @@ export async function renderPortraitDataUrl(
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(image, 0, 0, width, height);
   const source = ctx.getImageData(0, 0, width, height);
-  const { output } = renderPixelPortrait(source, mode);
+  const face = mode === 'fallback' ? await detectFaceBox(source) : null;
+  const { output } = renderPixelPortrait(source, mode, face);
 
   const out = document.createElement('canvas');
   out.width = output.width;

@@ -244,6 +244,27 @@ function opaqueBounds(
 }
 
 const HEAD_OF_PANEL = 0.45;
+const EYE_FRACTION = 0.4;
+const EYE_FRACTION_MIN = 0.3;
+const EYE_FRACTION_MAX = 0.5;
+
+/** A face rectangle in source pixels, with the eye line marked. */
+export interface FaceBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  eyeX: number;
+  eyeY: number;
+}
+
+export interface PortraitPlacement {
+  centerX: number;
+  eyeY: number;
+  headWidth: number;
+  scale: number;
+  destEyeY: number;
+}
 
 interface EyeRow {
   y: number;
@@ -350,6 +371,59 @@ function findEyeRow(
   return best;
 }
 
+function rowFill(
+  data: Uint8ClampedArray,
+  width: number,
+  y: number,
+  minX: number,
+  maxX: number
+): { left: number; right: number; span: number; count: number } {
+  let left = -1;
+  let right = -1;
+  let count = 0;
+  const row = y * width;
+  for (let x = minX; x <= maxX; x++) {
+    if (data[(row + x) * 4 + 3] < 24) continue;
+    count += 1;
+    if (left < 0) left = x;
+    right = x;
+  }
+  return { left, right, span: left < 0 ? 0 : right - left + 1, count };
+}
+
+/**
+ * Top of the solid silhouette, plus the head width a half-head below it.
+ * Sparse mask specks above the hair are skipped. A sudden widen is averaged
+ * so a shoulder or a halo does not become the whole head.
+ */
+function maskHeadAnchor(
+  data: Uint8ClampedArray,
+  width: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): { crown: number; headWidth: number; centerX: number } {
+  let crown = minY;
+  for (let y = minY; y <= maxY; y++) {
+    const row = rowFill(data, width, y, minX, maxX);
+    if (row.count >= 10 && row.span >= 12 && row.count >= row.span * 0.55) {
+      crown = y;
+      break;
+    }
+  }
+  let guess = Math.max(12, rowFill(data, width, crown, minX, maxX).span);
+  for (let pass = 0; pass < 4; pass++) {
+    const y = Math.min(maxY, Math.round(crown + guess * 0.5));
+    const row = rowFill(data, width, y, minX, maxX);
+    if (row.count < 10 || row.span < 12 || row.count < row.span * 0.55) continue;
+    guess = row.span > guess * 1.85 ? Math.round((guess + row.span) / 2) : row.span;
+  }
+  const mid = rowFill(data, width, Math.min(maxY, Math.round(crown + guess * 0.4)), minX, maxX);
+  const centerX = mid.span > 0 ? (mid.left + mid.right) / 2 : (minX + maxX) / 2;
+  return { crown, headWidth: Math.max(8, guess), centerX };
+}
+
 function measureHead(
   data: Uint8ClampedArray,
   width: number,
@@ -358,64 +432,54 @@ function measureHead(
   maxX: number,
   maxY: number
 ): { headWidth: number; centerX: number; eyeY: number } {
+  const anchor = maskHeadAnchor(data, width, minX, minY, maxX, maxY);
   const eye = findEyeRow(data, width, minX, minY, maxX, maxY);
   if (eye) {
-    const reach = Math.max(4, Math.floor(eye.span * 0.42));
-    const y0 = Math.max(minY, eye.y - reach);
-    const spans: number[] = [eye.span];
-    for (let y = y0; y < eye.y; y++) {
-      const span = opaqueBounds(data, width, y, minX, maxX).span;
-      if (span >= 12 && span <= eye.span * 1.45) spans.push(span);
+    const drop = eye.y - anchor.crown;
+    // A hit glued to the hairline is the crown, not the eyes. Dark hair on a
+    // dark background does this. Anything else in a normal head is kept.
+    const inHead = drop >= anchor.headWidth * 0.3 && drop <= anchor.headWidth * 1.4;
+    if (inHead) {
+      const reach = Math.max(4, Math.floor(eye.span * 0.42));
+      const y0 = Math.max(minY, eye.y - reach);
+      const spans: number[] = [eye.span];
+      for (let y = y0; y < eye.y; y++) {
+        const span = opaqueBounds(data, width, y, minX, maxX).span;
+        if (span >= 12 && span <= eye.span * 1.45) spans.push(span);
+      }
+      spans.sort((a, b) => a - b);
+      const headWidth = Math.max(8, spans[Math.floor(spans.length * 0.65)] ?? eye.span);
+      let centerX = (eye.left + eye.right) / 2;
+      if (eye.span > headWidth * 1.35) {
+        const mid = Math.max(minY, eye.y - Math.max(2, Math.floor(headWidth * 0.2)));
+        const top = opaqueBounds(data, width, mid, minX, maxX);
+        if (top.span >= 8) centerX = (top.left + top.right) / 2;
+      }
+      return { headWidth, centerX, eyeY: eye.y };
     }
-    spans.sort((a, b) => a - b);
-    const headWidth = Math.max(8, spans[Math.floor(spans.length * 0.65)] ?? eye.span);
-    let centerX = (eye.left + eye.right) / 2;
-    if (eye.span > headWidth * 1.35) {
-      const mid = Math.max(minY, eye.y - Math.max(2, Math.floor(headWidth * 0.2)));
-      const top = opaqueBounds(data, width, mid, minX, maxX);
-      if (top.span >= 8) centerX = (top.left + top.right) / 2;
-    }
-    return { headWidth, centerX, eyeY: eye.y };
   }
 
-  const rows = maxY - minY + 1;
-  const topLimit = minY + Math.max(1, Math.floor(rows * 0.22));
-  const topSpans: number[] = [];
-  for (let y = minY; y <= topLimit; y++) topSpans.push(opaqueBounds(data, width, y, minX, maxX).span);
-  topSpans.sort((a, b) => a - b);
-  const headWidth = Math.max(8, topSpans[Math.floor(topSpans.length * 0.6)] ?? 8);
-  const search = minY + Math.floor(rows * 0.18);
-  let shoulderY = -1;
-  let run = 0;
-  for (let y = search; y <= maxY; y++) {
-    const span = opaqueBounds(data, width, y, minX, maxX).span;
-    if (span > headWidth * 1.22) {
-      run += 1;
-      if (run >= 3) {
-        shoulderY = y - 2;
-        break;
-      }
-    } else {
-      run = 0;
+  // No trustworthy eye row. A head that holds its width and then flares is
+  // cut at the shoulders. A mass that never flares (a full head of hair) puts
+  // the eyes one head-width under the crown.
+  let stable = 0;
+  const need = Math.max(4, Math.round(anchor.headWidth * 0.35));
+  const searchEnd = Math.min(maxY, Math.round(anchor.crown + anchor.headWidth * 4));
+  let eyeY = anchor.crown + anchor.headWidth * 0.84;
+  for (let y = anchor.crown; y <= searchEnd; y++) {
+    const span = rowFill(data, width, y, minX, maxX).span;
+    if (span > anchor.headWidth * 1.45 && stable >= need) {
+      eyeY = anchor.crown + (y - anchor.crown) * 0.46;
+      break;
     }
+    if (span >= anchor.headWidth * 0.8 && span <= anchor.headWidth * 1.2) stable += 1;
+    else if (span > anchor.headWidth * 1.2) stable = 0;
   }
-  const hasShoulders = shoulderY > minY + 4;
-  const eyeY = hasShoulders ? minY + (shoulderY - minY) * 0.46 : minY + headWidth * 0.42;
-  const band = opaqueBounds(data, width, Math.max(minY, Math.min(maxY, Math.round(eyeY))), minX, maxX);
-  let centerX = band.span > 0 ? (band.left + band.right) / 2 : (minX + maxX) / 2;
-  if (band.span > headWidth * 1.35) {
-    const mid = Math.min(maxY, minY + Math.max(1, Math.floor((topLimit - minY) * 0.55)));
-    const top = opaqueBounds(data, width, mid, minX, maxX);
-    if (top.span > 0) centerX = (top.left + top.right) / 2;
-  }
-  return { headWidth, centerX, eyeY };
+  eyeY = Math.max(anchor.crown + 4, Math.min(maxY - 1, eyeY));
+  return { headWidth: anchor.headWidth, centerX: anchor.centerX, eyeY };
 }
 
-/**
- * Square frame. The head is about 45% of the width, eyes sit at 40% from the
- * top, and the shoulders run off the bottom edge instead of shrinking the face.
- */
-export function frameHeadAndShoulders(source: ImageData, size: number): ImageData {
+function boundsOf(source: ImageData): { minX: number; minY: number; maxX: number; maxY: number; cutout: boolean } {
   const { width, height, data } = source;
   let transparent = 0;
   let minX = width;
@@ -435,30 +499,65 @@ export function frameHeadAndShoulders(source: ImageData, size: number): ImageDat
       if (y > maxY) maxY = y;
     }
   }
+  return { minX, minY, maxX, maxY, cutout: transparent > width * height * 0.08 && maxX >= minX };
+}
 
-  const cutout = transparent > width * height * 0.08 && maxX >= minX;
-  const out = new Uint8ClampedArray(size * size * 4);
+/**
+ * Where the eyes go in the square frame. A face box wins. Otherwise the eyes
+ * sit about one head-width under the top of the mask. The destination eye
+ * line is clamped to 30–50% of the panel, and the face rectangle is kept
+ * inside the panel when a box is known.
+ */
+export function portraitPlacement(source: ImageData, size: number, face?: FaceBox | null): PortraitPlacement {
+  const { width, height } = source;
+  const bounds = boundsOf(source);
   let centerX = width / 2;
   let eyeY = height * 0.36;
-  let scale = Math.min(size / Math.max(1, width), size / Math.max(1, height)) * 0.92;
-  if (cutout) {
-    const head = measureHead(data, width, minX, minY, maxX, maxY);
+  let headWidth = Math.max(8, Math.min(width, height));
+  if (face && face.width >= 8 && face.height >= 8) {
+    centerX = face.eyeX;
+    eyeY = face.eyeY;
+    headWidth = Math.max(8, face.width);
+  } else if (bounds.cutout) {
+    const head = measureHead(source.data, width, bounds.minX, bounds.minY, bounds.maxX, bounds.maxY);
     centerX = head.centerX;
     eyeY = head.eyeY;
-    scale = (size * HEAD_OF_PANEL) / head.headWidth;
+    headWidth = head.headWidth;
   } else {
     const side = Math.min(width, height);
     centerX = width / 2;
     eyeY = (height > width ? (height - side) * 0.08 : (height - side) / 2) + side * 0.4;
-    scale = (size * 0.92) / side;
+    headWidth = side / 0.92 * HEAD_OF_PANEL;
   }
 
-  const destEyeY = size * 0.4;
+  const destEyeY = Math.min(size * EYE_FRACTION_MAX, Math.max(size * EYE_FRACTION_MIN, size * EYE_FRACTION));
+  let scale = (size * HEAD_OF_PANEL) / Math.max(8, headWidth);
+  if (face && face.height >= 8) {
+    const chin = face.y + face.height;
+    if (chin > eyeY + 1) {
+      const fitChin = (size * 0.97 - destEyeY) / (chin - eyeY);
+      if (fitChin > 0) scale = Math.min(scale, fitChin);
+    }
+    if (eyeY > face.y + 1) {
+      const fitTop = (destEyeY - size * 0.02) / (eyeY - face.y);
+      if (fitTop > 0) scale = Math.min(scale, fitTop);
+    }
+  }
+  return { centerX, eyeY, headWidth, scale, destEyeY };
+}
+
+/**
+ * Square frame. The head is about 45% of the width, eyes sit at 40% from the
+ * top, and the shoulders run off the bottom edge instead of shrinking the face.
+ */
+export function frameHeadAndShoulders(source: ImageData, size: number, face?: FaceBox | null): ImageData {
+  const place = portraitPlacement(source, size, face);
+  const out = new Uint8ClampedArray(size * size * 4);
   const destCenterX = (size - 1) / 2;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const sx = centerX + (x - destCenterX) / scale;
-      const sy = eyeY + (y - destEyeY) / scale;
+      const sx = place.centerX + (x - destCenterX) / place.scale;
+      const sy = place.eyeY + (y - place.destEyeY) / place.scale;
       sampleBilinear(source, sx, sy, out, (y * size + x) * 4);
     }
   }
@@ -1167,6 +1266,34 @@ export function classifySkin(faceMedian: number): SkinKind {
   return 'dark';
 }
 
+/**
+ * 95th percentile of opaque pixels that are not a clipped white background.
+ * A white wall exposed to the sensor leaves the face darker than this anchor.
+ */
+export function brightReference(source: ImageData): number {
+  const values: number[] = [];
+  const { data } = source;
+  for (let pixel = 0; pixel < data.length / 4; pixel++) {
+    if (data[pixel * 4 + 3] < 24) continue;
+    const lum = opaqueLuminance(data, pixel);
+    if (lum >= 248) continue;
+    values.push(lum);
+  }
+  if (values.length < 20) return 0;
+  values.sort((a, b) => a - b);
+  return values[Math.min(values.length - 1, Math.floor(values.length * 0.95))] ?? 0;
+}
+
+/**
+ * Lift a cheek that sits well below the photo's own bright anchor.
+ * A dark scene with no separate highlight is left alone, so a dark face stays dark.
+ */
+export function normalizeExposure(cheek: number, reference: number): number {
+  if (reference < 140 || cheek <= 0 || cheek >= reference * 0.9) return cheek;
+  const lifted = (cheek / reference) * 220;
+  return Math.min(255, Math.max(cheek, lifted));
+}
+
 function sampleLuminance(
   source: ImageData,
   x0: number,
@@ -1367,8 +1494,9 @@ function skinIndex(kind: SkinKind, rank: number): number {
  */
 export function posterizeKeepingSkin(source: ImageData, features: Uint8Array, original?: ImageData): ImageData {
   const { width, height } = source;
-  const median = faceMedianLuminance(original ?? source);
-  const kind = classifySkin(median);
+  const measured = original ?? source;
+  const median = faceMedianLuminance(measured);
+  const kind = classifySkin(normalizeExposure(median, brightReference(measured)));
   const skinLuma: number[] = [];
   const skinAt: number[] = [];
   for (let y = 0; y < height; y++) {
@@ -1466,18 +1594,19 @@ function paintProtected(source: ImageData, protect: Uint8Array): ImageData {
 
 export function renderPixelPortrait(
   source: ImageData,
-  mode: PortraitProcessMode
+  mode: PortraitProcessMode,
+  face?: FaceBox | null
 ): { grid: ImageData; output: ImageData } {
   const cleaned = cleanCutoutMask(source);
   let prepared: ImageData;
   if (mode === 'ai') {
     prepared = posterize(downsampleNearest(keyPlainBackground(cleaned), PORTRAIT_GRID, PORTRAIT_GRID));
   } else {
-    const framed = frameHeadAndShoulders(cleaned, FALLBACK_WORKING);
+    const framed = frameHeadAndShoulders(cleaned, FALLBACK_WORKING, face);
     const features = detectDarkFeatures(framed);
     const smoothed = smoothForDrawing(framed);
     const posted = posterizeKeepingSkin(smoothed, features, framed);
-    const kind = classifySkin(faceMedianLuminance(framed));
+    const kind = classifySkin(normalizeExposure(faceMedianLuminance(framed), brightReference(framed)));
     const small = downsampleNearest(posted, PORTRAIT_GRID, PORTRAIT_GRID);
     const originalSmall = downsampleNearest(framed, PORTRAIT_GRID, PORTRAIT_GRID);
     const featureSmall = downsampleMask(features, framed.width, framed.height, PORTRAIT_GRID, PORTRAIT_GRID);

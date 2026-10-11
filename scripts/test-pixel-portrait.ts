@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   PIXEL_PALETTE,
   OUTLINE_COLOR,
@@ -22,6 +24,8 @@ import {
   skinPalette,
   posterizeKeepingSkin,
   faceMedianLuminance,
+  normalizeExposure,
+  portraitPlacement,
 } from '../lib/pixel-portrait.ts';
 import { createImageData } from '../lib/dither.ts';
 
@@ -306,6 +310,52 @@ test('cut-out mask drops the stray line above the head', () => {
   assert.equal(outlined.data[line + 3], 0);
 });
 
+test('a white background lifts an underexposed light face without lifting a dark scene', () => {
+  const ricoma = normalizeExposure(118, 154);
+  assert.equal(classifySkin(ricoma), 'medium');
+  const sunny = normalizeExposure(147, 193);
+  assert.equal(classifySkin(sunny), 'medium');
+  const dark = normalizeExposure(68, 81);
+  assert.equal(classifySkin(dark), 'dark');
+  const light = normalizeExposure(184, 216);
+  assert.equal(classifySkin(light), 'light');
+  const darkOnWhite = normalizeExposure(40, 200);
+  assert.equal(classifySkin(darkOnWhite), 'dark');
+});
+
+test('a bright crown is not treated as the eye line', () => {
+  const width = 90;
+  const height = 220;
+  const image = solid(width, height, 0, 0, 0, 0);
+  for (let y = 16; y < 200; y++) {
+    for (let x = 27; x < 63; x++) setPixel(image, x, y, 36, 34, 32);
+  }
+  for (let y = 16; y < 28; y++) {
+    for (let x = 30; x < 60; x++) setPixel(image, x, y, 210, 208, 204);
+  }
+  const place = portraitPlacement(image, 96);
+  assert.ok(place.eyeY > 40, `eye row stayed on the crown at ${place.eyeY.toFixed(0)}`);
+  const fraction = place.destEyeY / 96;
+  assert.ok(fraction >= 0.3 && fraction <= 0.5, `eyes at ${fraction.toFixed(2)}`);
+});
+
+test('a face low in the frame stays inside the panel', () => {
+  const width = 120;
+  const height = 280;
+  const image = solid(width, height, 0, 0, 0, 0);
+  for (let y = 8; y < 260; y++) {
+    for (let x = 10; x < 110; x++) setPixel(image, x, y, 90, 80, 70);
+  }
+  const face = { x: 30, y: 140, width: 50, height: 70, eyeX: 55, eyeY: 168 };
+  const place = portraitPlacement(image, 96, face);
+  const fraction = place.destEyeY / 96;
+  assert.ok(fraction >= 0.3 && fraction <= 0.5, `eyes at ${fraction.toFixed(2)}`);
+  const destChin = place.destEyeY + (face.y + face.height - face.eyeY) * place.scale;
+  const destTop = place.destEyeY + (face.y - face.eyeY) * place.scale;
+  assert.ok(destChin <= 96, `chin at ${destChin.toFixed(1)}`);
+  assert.ok(destTop >= 0, `face top at ${destTop.toFixed(1)}`);
+});
+
 test('a dark beard does not pull a lit face into the dark band', () => {
   const image = solid(80, 80, 42, 40, 38);
   for (let y = 34; y <= 38; y++) {
@@ -384,4 +434,110 @@ test('downsample nearest keeps a flat field', () => {
   const small = downsampleNearest(image, 2, 2);
   assert.equal(small.width, 2);
   assert.equal(small.data[0], 100);
+});
+
+function loadPng(path) {
+  const rawPath = `${path}.rgba`;
+  const converted = spawnSync('python3', [
+    '-c',
+    `
+from PIL import Image
+im = Image.open(${JSON.stringify(path)}).convert('RGBA')
+w, h = im.size
+open(${JSON.stringify(rawPath)}, 'wb').write(w.to_bytes(4,'little')+h.to_bytes(4,'little')+im.tobytes())
+`,
+  ]);
+  if (converted.status !== 0) throw new Error(converted.stderr?.toString() || 'png convert failed');
+  const raw = readFileSync(rawPath);
+  const width = raw.readUInt32LE(0);
+  const height = raw.readUInt32LE(4);
+  const copy = new Uint8ClampedArray(raw.buffer.slice(raw.byteOffset + 8, raw.byteOffset + 8 + width * height * 4));
+  return createImageData(copy, width, height);
+}
+
+test('eye row is inside the panel for each of the four photos', async (t) => {
+  const dir = '/tmp/qa-cutouts';
+  const names = ['window', 'sunny', 'ricoma', 'nahid'];
+  const chrome = '/usr/bin/google-chrome-stable';
+  const puppeteerPath = '/tmp/pup/node_modules/puppeteer-core/lib/esm/puppeteer/puppeteer-core.js';
+  if (!names.every((name) => existsSync(`${dir}/${name}.png`)) || !existsSync(chrome) || !existsSync(puppeteerPath)) {
+    t.skip('local portrait photos or the face detector runtime are not available');
+    return;
+  }
+
+  const pageDir = '/tmp/face-page-test';
+  rmSync(pageDir, { recursive: true, force: true });
+  mkdirSync(`${pageDir}/photos`, { recursive: true });
+  symlinkSync('/workspace/node_modules', `${pageDir}/node_modules`);
+  symlinkSync('/workspace/public/models', `${pageDir}/models`);
+  for (const name of names) symlinkSync(`${dir}/${name}.png`, `${pageDir}/photos/${name}.png`);
+  writeFileSync(
+    `${pageDir}/detect.html`,
+    `<!DOCTYPE html><body><script type="module">
+import { FaceDetector, FilesetResolver } from './node_modules/@mediapipe/tasks-vision/vision_bundle.mjs';
+const wasm = await FilesetResolver.forVisionTasks('./node_modules/@mediapipe/tasks-vision/wasm');
+const detector = await FaceDetector.createFromOptions(wasm, {
+  baseOptions: { modelAssetPath: './models/blaze_face_full_range.tflite' },
+  runningMode: 'IMAGE',
+  minDetectionConfidence: 0.5,
+});
+const names = ${JSON.stringify(names)};
+const out = [];
+for (const name of names) {
+  const image = new Image();
+  image.src = './photos/' + name + '.png';
+  await image.decode();
+  const scale = Math.min(1, 1024 / Math.max(image.width, image.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const found = detector.detect(canvas).detections;
+  if (!found.length) { out.push(null); continue; }
+  const best = found.reduce((a, b) => ((a.boundingBox?.width ?? 0) * (a.boundingBox?.height ?? 0) > (b.boundingBox?.width ?? 0) * (b.boundingBox?.height ?? 0) ? a : b));
+  const box = best.boundingBox;
+  const eyes = (best.keypoints || []).slice(0, 2);
+  const eyeX = eyes.length ? eyes.reduce((s, p) => s + p.x, 0) / eyes.length * canvas.width : box.originX + box.width / 2;
+  const eyeY = eyes.length ? eyes.reduce((s, p) => s + p.y, 0) / eyes.length * canvas.height : box.originY + box.height * 0.38;
+  out.push({ x: box.originX / scale, y: box.originY / scale, width: box.width / scale, height: box.height / scale, eyeX: eyeX / scale, eyeY: eyeY / scale });
+}
+document.body.textContent = JSON.stringify(out);
+</script></body></html>`
+  );
+
+  const server = spawn('python3', ['-m', 'http.server', '8766', '--bind', '127.0.0.1'], { cwd: pageDir, stdio: 'ignore' });
+  try {
+    const puppeteer = (await import(puppeteerPath)).default;
+    const browser = await puppeteer.launch({
+      executablePath: chrome,
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    });
+    try {
+      const page = await browser.newPage();
+      await page.goto('http://127.0.0.1:8766/detect.html', { waitUntil: 'networkidle0', timeout: 60000 });
+      await page.waitForFunction(() => document.body && document.body.textContent.startsWith('['), { timeout: 60000 });
+      const faces = JSON.parse(await page.evaluate(() => document.body.textContent));
+      assert.equal(faces.length, names.length);
+      names.forEach((name, index) => {
+        const face = faces[index];
+        assert.ok(face, `${name} face was not detected`);
+        const image = loadPng(`${dir}/${name}.png`);
+        const place = portraitPlacement(image, 256, face);
+        const fraction = place.destEyeY / 256;
+        assert.ok(fraction >= 0.3 && fraction <= 0.5, `${name} eyes at ${fraction.toFixed(2)}`);
+        const destChin = place.destEyeY + (face.y + face.height - face.eyeY) * place.scale;
+        const destTop = place.destEyeY + (face.y - place.eyeY) * place.scale;
+        assert.ok(destTop >= -1, `${name} face top at ${destTop.toFixed(1)}`);
+        assert.ok(destChin <= 256, `${name} chin at ${destChin.toFixed(1)}`);
+      });
+    } finally {
+      await browser.close();
+    }
+  } finally {
+    server.kill();
+  }
 });
