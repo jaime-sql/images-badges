@@ -196,29 +196,114 @@ function sampleBilinear(
   const y1 = Math.min(height - 1, y0 + 1);
   const tx = x - x0;
   const ty = y - y0;
-  const i00 = (y0 * width + x0) * 4;
-  const i10 = (y0 * width + x1) * 4;
-  const i01 = (y1 * width + x0) * 4;
-  const i11 = (y1 * width + x1) * 4;
-  const a00 = data[i00 + 3];
-  const a10 = data[i10 + 3];
-  const a01 = data[i01 + 3];
-  const a11 = data[i11 + 3];
-  const alpha =
-    a00 * (1 - tx) * (1 - ty) + a10 * tx * (1 - ty) + a01 * (1 - tx) * ty + a11 * tx * ty;
-  if (alpha < 16) {
+  const corners = [
+    [(y0 * width + x0) * 4, (1 - tx) * (1 - ty)],
+    [(y0 * width + x1) * 4, tx * (1 - ty)],
+    [(y1 * width + x0) * 4, (1 - tx) * ty],
+    [(y1 * width + x1) * 4, tx * ty],
+  ] as const;
+  let weight = 0;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let alpha = 0;
+  for (const [index, w] of corners) {
+    const a = data[index + 3];
+    if (a < 16 || w <= 0) continue;
+    weight += w;
+    r += data[index] * w;
+    g += data[index + 1] * w;
+    b += data[index + 2] * w;
+    alpha += a * w;
+  }
+  if (weight < 0.2) {
     out[di + 3] = 0;
     return;
   }
-  for (let c = 0; c < 3; c++) {
-    const v =
-      data[i00 + c] * (1 - tx) * (1 - ty) +
-      data[i10 + c] * tx * (1 - ty) +
-      data[i01 + c] * (1 - tx) * ty +
-      data[i11 + c] * tx * ty;
-    out[di + c] = Math.max(0, Math.min(255, Math.round(v)));
+  out[di] = Math.max(0, Math.min(255, Math.round(r / weight)));
+  out[di + 1] = Math.max(0, Math.min(255, Math.round(g / weight)));
+  out[di + 2] = Math.max(0, Math.min(255, Math.round(b / weight)));
+  out[di + 3] = Math.max(0, Math.min(255, Math.round(alpha / weight)));
+}
+
+function opaqueSpan(
+  data: Uint8ClampedArray,
+  width: number,
+  y: number,
+  minX: number,
+  maxX: number
+): number {
+  let left = -1;
+  let right = -1;
+  for (let x = minX; x <= maxX; x++) {
+    if (data[(y * width + x) * 4 + 3] < 24) continue;
+    if (left < 0) left = x;
+    right = x;
   }
-  out[di + 3] = Math.max(0, Math.min(255, Math.round(alpha)));
+  return left < 0 ? 0 : right - left + 1;
+}
+
+/**
+ * Eyes sit about 45% of the way from the crown to the shoulder line when the
+ * head is narrower than the torso. A bust that is already square keeps the
+ * eyes near 36% of its height, which the frame then places at 40%.
+ */
+function estimateEyeAndCrop(
+  data: Uint8ClampedArray,
+  width: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): { cropX: number; cropY: number; cropW: number; cropH: number; eyeInCrop: number } {
+  const rows = maxY - minY + 1;
+  const topLimit = minY + Math.max(1, Math.floor(rows * 0.22));
+  let topSpan = 0;
+  let topCount = 0;
+  for (let y = minY; y <= topLimit; y++) {
+    topSpan += opaqueSpan(data, width, y, minX, maxX);
+    topCount += 1;
+  }
+  const topAvg = topCount > 0 ? topSpan / topCount : 0;
+
+  const search = minY + Math.floor(rows * 0.28);
+  let shoulderY = Math.min(maxY, minY + Math.floor(rows * 0.62));
+  let shoulderSpan = -1;
+  for (let y = search; y <= maxY; y++) {
+    const span = opaqueSpan(data, width, y, minX, maxX);
+    if (span > shoulderSpan) {
+      shoulderSpan = span;
+      shoulderY = y;
+    }
+  }
+
+  const hasShoulders = shoulderSpan > topAvg * 1.22 && shoulderY > minY + 4;
+  const eyeAbs = hasShoulders ? minY + (shoulderY - minY) * 0.45 : minY + rows * 0.36;
+  const cropBottom = hasShoulders
+    ? Math.min(maxY, Math.round(shoulderY + (shoulderY - minY) * 0.42))
+    : maxY;
+
+  let left = maxX;
+  let right = minX;
+  for (let y = minY; y <= cropBottom; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      if (data[(y * width + x) * 4 + 3] < 24) continue;
+      if (x < left) left = x;
+      if (x > right) right = x;
+    }
+  }
+  if (right < left) {
+    left = minX;
+    right = maxX;
+  }
+
+  return {
+    cropX: left,
+    cropY: minY,
+    cropW: Math.max(1, right - left + 1),
+    cropH: Math.max(1, cropBottom - minY + 1),
+    eyeInCrop: eyeAbs - minY,
+  };
 }
 
 /**
@@ -251,31 +336,39 @@ export function frameHeadAndShoulders(source: ImageData, size: number): ImageDat
   let cropY = 0;
   let cropW = width;
   let cropH = height;
+  let eyeInCrop = height * 0.4;
   if (cutout) {
-    cropX = minX;
-    cropY = minY;
-    cropW = maxX - minX + 1;
-    cropH = maxY - minY + 1;
+    const framed = estimateEyeAndCrop(data, width, minX, minY, maxX, maxY);
+    cropX = framed.cropX;
+    cropY = framed.cropY;
+    cropW = framed.cropW;
+    cropH = framed.cropH;
+    eyeInCrop = framed.eyeInCrop;
   } else {
     const side = Math.min(width, height);
     cropW = side;
     cropH = side;
     cropX = Math.floor((width - side) / 2);
     cropY = height > width ? Math.floor((height - side) * 0.08) : Math.floor((height - side) / 2);
+    eyeInCrop = cropH * 0.4;
   }
 
   const out = new Uint8ClampedArray(size * size * 4);
-  const targetW = size * (cutout ? 0.78 : 0.92);
-  const targetH = size * (cutout ? 0.88 : 0.92);
-  const scale = Math.min(targetW / cropW, targetH / cropH);
+  const margin = Math.max(6, Math.round(size * 0.04));
+  const above = Math.max(1, eyeInCrop);
+  const below = Math.max(1, cropH - eyeInCrop);
+  const scaleTop = Math.max(0.01, (size * 0.4 - margin) / above);
+  const scaleBottom = Math.max(0.01, (size * 0.9 - size * 0.4) / below);
+  const scaleW = Math.max(0.01, (size - margin * 2) / cropW);
+  const scale = cutout
+    ? Math.min(scaleW, scaleTop, scaleBottom)
+    : Math.min((size * 0.92) / cropW, (size * 0.92) / cropH);
   const drawnW = cropW * scale;
   const drawnH = cropH * scale;
   const dx = (size - drawnW) / 2;
-  const eyeInCrop = cropH * (cutout ? 0.32 : 0.4);
   let dy = size * 0.4 - eyeInCrop * scale;
-  const margin = 3;
   if (dy < margin) dy = margin;
-  if (dy > size - margin - drawnH) dy = size - margin - drawnH;
+  if (dy > size - margin - drawnH) dy = Math.max(margin, size - margin - drawnH);
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
@@ -292,37 +385,123 @@ function opaqueLuminance(data: Uint8ClampedArray, pixel: number): number {
   return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
 }
 
-/** Spread face tones, then brighten toward the top-left so cel bands have a light direction. */
+/**
+ * Light from the top-left, as a multiply that never brightens past the
+ * current tone. Local contrast has already separated eyes from skin.
+ */
 export function applyCelLight(source: ImageData): ImageData {
   const { width, height } = source;
   const data = new Uint8ClampedArray(source.data);
-  const samples: number[] = [];
-  for (let pixel = 0; pixel < width * height; pixel++) {
-    if (isOpaque(data, pixel)) samples.push(opaqueLuminance(data, pixel));
-  }
-  samples.sort((a, b) => a - b);
-  const low = samples[Math.floor(samples.length * 0.04)] ?? 0;
-  const high = samples[Math.floor(samples.length * 0.96)] ?? 255;
-  const span = Math.max(24, high - low);
-
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const pixel = y * width + x;
       if (!isOpaque(data, pixel)) continue;
       const i = pixel * 4;
-      const lum = opaqueLuminance(data, pixel);
-      const stretched = Math.max(0, Math.min(1, (lum - low) / span));
       const lx = 1 - x / Math.max(1, width - 1);
       const ly = 1 - y / Math.max(1, height - 1);
-      const gain = 0.78 + 0.34 * lx + 0.2 * ly;
-      const next = Math.max(0, Math.min(255, stretched * 255 * gain));
-      const scale = lum < 1 ? next / 1 : next / lum;
-      data[i] = Math.max(0, Math.min(255, Math.round(data[i] * scale)));
-      data[i + 1] = Math.max(0, Math.min(255, Math.round(data[i + 1] * scale)));
-      data[i + 2] = Math.max(0, Math.min(255, Math.round(data[i + 2] * scale)));
+      const gain = 0.74 + 0.26 * (0.62 * lx + 0.38 * ly);
+      data[i] = Math.max(0, Math.min(255, Math.round(data[i] * gain)));
+      data[i + 1] = Math.max(0, Math.min(255, Math.round(data[i + 1] * gain)));
+      data[i + 2] = Math.max(0, Math.min(255, Math.round(data[i + 2] * gain)));
     }
   }
   return createImageData(data, width, height);
+}
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)));
+  return sorted[index];
+}
+
+/**
+ * CLAHE-like local contrast on foreground pixels. Each tile stretches the
+ * band between its own 15th and 85th percentiles, and the stretch is capped
+ * so a flat cheek does not turn into noise. Transparent pixels are ignored.
+ */
+export function applyLocalContrast(source: ImageData): ImageData {
+  const { width, height } = source;
+  const count = width * height;
+  const lum = new Float32Array(count);
+  const mask = new Uint8Array(count);
+  const global: number[] = [];
+  for (let pixel = 0; pixel < count; pixel++) {
+    const i = pixel * 4;
+    if (source.data[i + 3] < 20) continue;
+    mask[pixel] = 1;
+    lum[pixel] = opaqueLuminance(source.data, pixel);
+    global.push(lum[pixel]);
+  }
+  global.sort((a, b) => a - b);
+  const globalLow = percentile(global, 0.15);
+  const globalHigh = percentile(global, 0.85);
+
+  const tiles = 8;
+  const tileW = width / tiles;
+  const tileH = height / tiles;
+  const lows = new Float32Array(tiles * tiles);
+  const highs = new Float32Array(tiles * tiles);
+  for (let ty = 0; ty < tiles; ty++) {
+    for (let tx = 0; tx < tiles; tx++) {
+      const samples: number[] = [];
+      const y0 = Math.floor(ty * tileH);
+      const y1 = Math.min(height, Math.floor((ty + 1) * tileH));
+      const x0 = Math.floor(tx * tileW);
+      const x1 = Math.min(width, Math.floor((tx + 1) * tileW));
+      for (let y = y0; y < y1; y++) {
+        for (let x = x0; x < x1; x++) {
+          const pixel = y * width + x;
+          if (mask[pixel]) samples.push(lum[pixel]);
+        }
+      }
+      samples.sort((a, b) => a - b);
+      const slot = ty * tiles + tx;
+      if (samples.length < 8) {
+        lows[slot] = globalLow;
+        highs[slot] = globalHigh;
+      } else {
+        lows[slot] = percentile(samples, 0.15);
+        highs[slot] = percentile(samples, 0.85);
+      }
+    }
+  }
+
+  const out = new Uint8ClampedArray(source.data);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixel = y * width + x;
+      if (!mask[pixel]) continue;
+      const gx = tileW > 0 ? (x + 0.5) / tileW - 0.5 : 0;
+      const gy = tileH > 0 ? (y + 0.5) / tileH - 0.5 : 0;
+      const x0 = Math.max(0, Math.min(tiles - 1, Math.floor(gx)));
+      const y0 = Math.max(0, Math.min(tiles - 1, Math.floor(gy)));
+      const x1 = Math.min(tiles - 1, x0 + 1);
+      const y1 = Math.min(tiles - 1, y0 + 1);
+      const tx = Math.max(0, Math.min(1, gx - x0));
+      const ty = Math.max(0, Math.min(1, gy - y0));
+      const blend = (grid: Float32Array) =>
+        grid[y0 * tiles + x0] * (1 - tx) * (1 - ty) +
+        grid[y0 * tiles + x1] * tx * (1 - ty) +
+        grid[y1 * tiles + x0] * (1 - tx) * ty +
+        grid[y1 * tiles + x1] * tx * ty;
+      const low = blend(lows);
+      const high = blend(highs);
+      const span = high - low;
+      const current = lum[pixel];
+      let next = current;
+      if (span >= 8) {
+        const mid = (low + high) / 2;
+        const expand = Math.min(5, 140 / span);
+        next = Math.max(0, Math.min(255, mid + (current - mid) * expand));
+      }
+      const scale = current < 1 ? next : next / current;
+      const i = pixel * 4;
+      out[i] = Math.max(0, Math.min(255, Math.round(source.data[i] * scale)));
+      out[i + 1] = Math.max(0, Math.min(255, Math.round(source.data[i + 1] * scale)));
+      out[i + 2] = Math.max(0, Math.min(255, Math.round(source.data[i + 2] * scale)));
+    }
+  }
+  return createImageData(out, width, height);
 }
 
 export function boxBlur(source: ImageData, radius: number): ImageData {
@@ -382,6 +561,43 @@ export function boxBlur(source: ImageData, radius: number): ImageData {
       out[di + 1] = Math.max(0, Math.min(255, Math.round(g / count)));
       out[di + 2] = Math.max(0, Math.min(255, Math.round(b / count)));
     }
+  }
+  return createImageData(out, width, height);
+}
+
+/**
+ * Six equal steps across the foreground luminance range. Transparent pixels
+ * stay transparent and do not move the black or white point.
+ */
+export function posterizeFromForeground(source: ImageData): ImageData {
+  const { width, height } = source;
+  const samples: number[] = [];
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    if (isOpaque(source.data, pixel)) samples.push(opaqueLuminance(source.data, pixel));
+  }
+  samples.sort((a, b) => a - b);
+  const count = samples.length;
+  const low = samples[Math.floor(count * 0.02)] ?? 0;
+  const high = samples[Math.min(Math.max(0, count - 1), Math.floor(count * 0.98))] ?? 255;
+  const span = Math.max(1, high - low);
+  const out = new Uint8ClampedArray(source.data);
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    const i = pixel * 4;
+    if (out[i + 3] < 20) {
+      out[i] = 0;
+      out[i + 1] = 0;
+      out[i + 2] = 0;
+      out[i + 3] = 0;
+      continue;
+    }
+    const lum = opaqueLuminance(out, pixel);
+    const t = Math.max(0, Math.min(1, (lum - low) / span));
+    const index = Math.min(PIXEL_PALETTE.length - 1, Math.floor(t * PIXEL_PALETTE.length));
+    const color = PIXEL_PALETTE[index];
+    out[i] = color.r;
+    out[i + 1] = color.g;
+    out[i + 2] = color.b;
+    out[i + 3] = 255;
   }
   return createImageData(out, width, height);
 }
@@ -496,9 +712,10 @@ export function renderPixelPortrait(
     prepared = posterize(downsampleNearest(keyPlainBackground(source), PORTRAIT_GRID, PORTRAIT_GRID));
   } else {
     const framed = frameHeadAndShoulders(source, FALLBACK_WORKING);
-    const lit = applyCelLight(framed);
-    const blurred = boxBlur(lit, 2);
-    const posted = posterize(blurred);
+    const blurred = boxBlur(framed, 1);
+    const contrasted = applyLocalContrast(blurred);
+    const lit = applyCelLight(contrasted);
+    const posted = posterizeFromForeground(lit);
     prepared = downsampleNearest(posted, PORTRAIT_GRID, PORTRAIT_GRID);
   }
   const outlined = applyOutlines(prepared);

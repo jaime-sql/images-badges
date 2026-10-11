@@ -6,7 +6,8 @@
  */
 
 import { FALLBACK_BADGE_LABEL } from './portrait-messages';
-import { fitCanvasText, toPixelFontCaps } from './text-fit';
+import { drawPixelText, loadPixelFont } from './pixel-font';
+import { fitCanvasText } from './text-fit';
 import type { EventCardConfig } from '../types/badge';
 
 export const EVENT_BADGE_WIDTH = 640;
@@ -43,17 +44,57 @@ function drawFitted(
   maxWidth: number,
   basePx: number,
   family: string,
-  pixelCaps: boolean,
   align: CanvasTextAlign
 ): void {
-  const source = pixelCaps ? toPixelFontCaps(text) : text;
-  const fitted = fitCanvasText(source, maxWidth, (value, scale) => {
+  const fitted = fitCanvasText(text, maxWidth, (value, scale) => {
     ctx.font = `${Math.max(1, Math.round(basePx * scale))}px ${family}`;
     return ctx.measureText(value).width;
   });
   ctx.font = `${Math.max(1, Math.round(basePx * fitted.scale))}px ${family}`;
   ctx.textAlign = align;
+  ctx.textBaseline = 'alphabetic';
   ctx.fillText(fitted.text, x, y);
+}
+
+/** Press Start 2P, uppercased, with the pixel-font accent marks. Returns the size used. */
+function drawPixelLine(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  basePx: number,
+  color: string,
+  align: 'left' | 'right'
+): number {
+  const upper = text.trim().normalize('NFC').toUpperCase();
+  if (!upper) return 0;
+  const units = Array.from(upper);
+  const widthAt = (count: number, size: number) => count * size;
+  let drawn = upper;
+  let size = basePx;
+  if (widthAt(units.length, basePx) > maxWidth) {
+    size = Math.max(8, Math.round(basePx * 0.7));
+    if (widthAt(units.length, size) > maxWidth) {
+      const ellipsis = '…';
+      let best = ellipsis;
+      let low = 0;
+      let high = units.length;
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const candidate = `${units.slice(0, mid).join('').trimEnd()}${ellipsis}`;
+        if (widthAt(Array.from(candidate).length, size) <= maxWidth) {
+          best = candidate;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+      drawn = best;
+    }
+  }
+  drawPixelText(ctx, drawn, x, y, size, color, align, 'top');
+  return size;
 }
 
 function loadImage(url: string): Promise<HTMLImageElement> {
@@ -77,9 +118,8 @@ export async function renderEventCard(
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Could not get 2D context for the event card');
 
-  const pixelFont = cssFamily('--font-press-start', '"Press Start 2P", monospace');
   const textFont = cssFamily('--font-inter', 'Inter, sans-serif');
-  await readyFont(pixelFont, 22);
+  await loadPixelFont();
   await readyFont(textFont, 18);
 
   canvas.width = EVENT_BADGE_WIDTH;
@@ -112,18 +152,16 @@ export async function renderEventCard(
     ctx.drawImage(logo, margin, y, dw, dh);
     const textX = margin + box + 16;
     const textW = contentW - box - 16;
-    ctx.fillStyle = INK;
-    drawFitted(ctx, options.eventCard.title, textX, y + 28, textW, 18, pixelFont, true, 'left');
+    const titleSize = drawPixelLine(ctx, options.eventCard.title, textX, y + 4, textW, 18, INK, 'left');
     ctx.fillStyle = MUTED;
-    drawFitted(ctx, options.eventCard.subtitle, textX, y + 52, textW, 16, textFont, false, 'left');
+    drawFitted(ctx, options.eventCard.subtitle, textX, y + 4 + titleSize + 18, textW, 16, textFont, 'left');
     y += box + 28;
   } else {
-    ctx.fillStyle = INK;
-    drawFitted(ctx, options.eventCard.title, margin, y, contentW, 22, pixelFont, true, 'left');
-    y += 28;
+    const titleSize = drawPixelLine(ctx, options.eventCard.title, margin, y, contentW, 22, INK, 'left');
+    y += titleSize + 16;
     ctx.fillStyle = MUTED;
-    drawFitted(ctx, options.eventCard.subtitle, margin, y, contentW, 18, textFont, false, 'left');
-    y += 36;
+    drawFitted(ctx, options.eventCard.subtitle, margin, y, contentW, 18, textFont, 'left');
+    y += 28;
   }
 
   const panel = 516;
@@ -146,19 +184,25 @@ export async function renderEventCard(
     drawEmptyPortrait(ctx, panelX, panelY, panel, textFont);
   }
 
-  y = panelY + panel + 36;
+  y = panelY + panel + 22;
   if (options.showFallbackLabel) {
     ctx.fillStyle = MUTED;
-    drawFitted(ctx, FALLBACK_BADGE_LABEL, margin, y, contentW, 13, textFont, false, 'left');
-    y += 28;
+    ctx.font = `12px ${textFont}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(FALLBACK_BADGE_LABEL, margin, y);
+    // The label sits under the panel. The gap below it clears the name and the accent marks.
+    y += 12 + 36;
+  } else {
+    y += 14;
   }
 
   const name = options.name.trim() || 'YOUR NAME';
-  ctx.fillStyle = options.name.trim() ? INK : '#8A8A94';
-  drawFitted(ctx, name, margin, y, contentW, 26, pixelFont, true, 'left');
-  y += 32;
+  const nameColor = options.name.trim() ? INK : '#8A8A94';
+  const nameSize = drawPixelLine(ctx, name, margin, y, contentW, 26, nameColor, 'left');
+  y += nameSize + 20;
   ctx.fillStyle = MUTED;
-  drawFitted(ctx, options.eventCard.role, margin, y, contentW, 18, textFont, false, 'left');
+  drawFitted(ctx, options.eventCard.role, margin, y, contentW, 18, textFont, 'left');
 
   const bandY = EVENT_BADGE_HEIGHT - 84;
   ctx.fillStyle = BAND;
@@ -166,28 +210,15 @@ export async function renderEventCard(
   ctx.fillStyle = BORDER;
   ctx.fillRect(0, bandY, EVENT_BADGE_WIDTH, 2);
 
-  ctx.fillStyle = MUTED;
-  drawFitted(
-    ctx,
-    options.eventCard.footer,
-    margin,
-    bandY + 50,
-    contentW * 0.62,
-    12,
-    pixelFont,
-    true,
-    'left'
-  );
-  ctx.fillStyle = INK;
-  drawFitted(
+  drawPixelLine(ctx, options.eventCard.footer, margin, bandY + 34, contentW * 0.62, 12, MUTED, 'left');
+  drawPixelLine(
     ctx,
     options.eventCard.number,
     EVENT_BADGE_WIDTH - margin,
-    bandY + 50,
+    bandY + 30,
     contentW * 0.32,
     16,
-    pixelFont,
-    true,
+    INK,
     'right'
   );
 }

@@ -8,11 +8,14 @@ import {
   PORTRAIT_OUTPUT,
   nearestPaletteIndex,
   posterize,
+  posterizeFromForeground,
   upscaleNearest,
   applyOutlines,
   applyRim,
+  applyLocalContrast,
   renderPixelPortrait,
   downsampleNearest,
+  frameHeadAndShoulders,
 } from '../lib/pixel-portrait.ts';
 import { createImageData } from '../lib/dither.ts';
 
@@ -124,6 +127,101 @@ test('fallback and AI paths emit a 128 grid enlarged 4x with palette colors only
     const j = (1 * output.width + 1) * 4;
     assert.equal(output.data[i], output.data[j]);
   }
+});
+
+test('foreground levels ignore transparent pixels and keep a cut-out transparent', () => {
+  const image = solid(12, 12, 255, 255, 255, 0);
+  for (let y = 2; y < 10; y++) {
+    for (let x = 2; x < 10; x++) setPixel(image, x, y, 40, 40, 44, 255);
+  }
+  for (let y = 3; y < 6; y++) {
+    for (let x = 4; x < 8; x++) setPixel(image, x, y, 210, 210, 214, 255);
+  }
+  const posted = posterizeFromForeground(image);
+  const dark = posted.data[(4 * 12 + 3) * 4];
+  const light = posted.data[(4 * 12 + 5) * 4];
+  assert.ok(dark < light, `dark ${dark} should be below light ${light}`);
+  assert.equal(posted.data[3], 0);
+  assert.equal(posted.data[(0 * 12 + 11) * 4 + 3], 0);
+
+  const { grid } = renderPixelPortrait(image, 'fallback');
+  assert.equal(grid.data[3], 0);
+  let rim = 0;
+  for (let i = 0; i < grid.data.length; i += 4) {
+    if (
+      grid.data[i] === RIM_COLOR.r &&
+      grid.data[i + 1] === RIM_COLOR.g &&
+      grid.data[i + 2] === RIM_COLOR.b &&
+      grid.data[i + 3] === 255
+    ) {
+      rim += 1;
+    }
+  }
+  assert.ok(rim > 8, `expected a light rim, found ${rim}`);
+});
+
+test('local contrast separates eyes from nearby skin', () => {
+  const size = 64;
+  const image = solid(size, size, 30, 30, 34);
+  for (let y = 8; y < 28; y++) {
+    for (let x = 8; x < 28; x++) setPixel(image, x, y, 96, 96, 100);
+  }
+  for (let y = 14; y < 18; y++) {
+    for (let x = 12; x < 16; x++) setPixel(image, x, y, 84, 84, 88);
+  }
+  for (let y = 48; y < 60; y++) {
+    for (let x = 48; x < 60; x++) setPixel(image, x, y, 250, 250, 252);
+  }
+  const contrasted = applyLocalContrast(image);
+  const mean = (x0, y0, x1, y1) => {
+    let sum = 0;
+    let n = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        const i = (y * size + x) * 4;
+        sum += contrasted.data[i];
+        n += 1;
+      }
+    }
+    return sum / n;
+  };
+  const eyes = mean(12, 14, 16, 18);
+  const skin = mean(20, 10, 26, 16);
+  assert.ok(skin - eyes > 24, `eyes ${eyes.toFixed(1)} stayed too close to skin ${skin.toFixed(1)}`);
+});
+
+test('head-and-shoulders crop puts the eyes near 40% from the top', () => {
+  const width = 60;
+  const height = 100;
+  const image = solid(width, height, 0, 0, 0, 0);
+  for (let y = 10; y < 48; y++) {
+    for (let x = 22; x < 38; x++) setPixel(image, x, y, 180, 180, 184);
+  }
+  for (let y = 48; y < 88; y++) {
+    for (let x = 8; x < 52; x++) setPixel(image, x, y, 120, 120, 124);
+  }
+  const eyeY = 28;
+  for (let x = 24; x < 28; x++) setPixel(image, x, eyeY, 12, 12, 16);
+  for (let x = 32; x < 36; x++) setPixel(image, x, eyeY, 12, 12, 16);
+
+  const framed = frameHeadAndShoulders(image, 80);
+  let best = -1;
+  let bestRow = 0;
+  for (let y = 0; y < framed.height; y++) {
+    let dark = 0;
+    for (let x = 0; x < framed.width; x++) {
+      const i = (y * framed.width + x) * 4;
+      if (framed.data[i + 3] < 20) continue;
+      if (framed.data[i] < 40) dark += 1;
+    }
+    if (dark > best) {
+      best = dark;
+      bestRow = y;
+    }
+  }
+  const ratio = bestRow / framed.height;
+  assert.ok(ratio > 0.32 && ratio < 0.48, `eyes landed at ${ratio.toFixed(2)} of the frame`);
+  assert.equal(framed.data[3], 0);
 });
 
 test('downsample nearest keeps a flat field', () => {

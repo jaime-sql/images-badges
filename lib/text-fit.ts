@@ -1,17 +1,8 @@
 /**
- * Text fitting for the event card.
- * Press Start 2P's latin subset has no accented capitals, so those glyphs are
- * folded to their base letters before the pixel font draws them.
+ * Text fitting for Inter lines on the event card.
+ * Press Start 2P lines are drawn by the pixel font, which keeps capital accents.
  * Long lines shrink to 70% and, if they still overflow, end with an ellipsis.
  */
-
-export function toPixelFontCaps(text: string): string {
-  return text
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/ß/g, 'SS')
-    .toUpperCase();
-}
 
 export function fitCanvasText(
   text: string,

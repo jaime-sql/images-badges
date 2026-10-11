@@ -25,4 +25,4 @@ export function siteLimitMessage(): BilingualMessage {
 export const FALLBACK_BUTTON_LABEL = 'Usar versión sin IA';
 export const GENERATING_LABEL = 'Creando tu retrato…';
 /** Small label drawn on the card when the browser fallback produced the portrait. */
-export const FALLBACK_BADGE_LABEL = '«Versión sin IA»';
+export const FALLBACK_BADGE_LABEL = 'Versión sin IA';

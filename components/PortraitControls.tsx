@@ -113,9 +113,14 @@ export default function PortraitControls({ imageUrl, apiUrl, onResult }: Portrai
       </div>
 
       <p className="font-mono text-[10px] text-zinc-500 leading-relaxed">
-        Retrato en pixel art a mano: contorno limpio, cel shading y la misma persona. Si el servicio
-        no responde, se usa la versión sin IA.
+        Retrato en pixel art a mano: contorno limpio, cel shading y la misma persona, sobre el recorte
+        sin fondo. Si el servicio no responde, se usa la versión sin IA.
       </p>
+      {!imageUrl && (
+        <p className="font-mono text-[10px] text-amber-300/90">
+          Espera el recorte sin fondo. El retrato no usa la foto con el cuarto detrás.
+        </p>
+      )}
 
       <button
         type="button"

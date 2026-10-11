@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fitCanvasText, toPixelFontCaps } from '../lib/text-fit.ts';
+import { readFileSync } from 'node:fs';
+import { fitCanvasText } from '../lib/text-fit.ts';
+import { configurePixelFont, pixelFontHasGlyph, shapePixelText } from '../lib/pixel-font.ts';
 import {
   FALLBACK_BADGE_LABEL,
   FALLBACK_BUTTON_LABEL,
@@ -11,9 +13,20 @@ import {
 
 const measure = (value, scale) => value.length * 10 * scale;
 
-test('accented capitals fold to the pixel-font latin subset', () => {
-  assert.equal(toPixelFontCaps('José Muñoz'), 'JOSE MUNOZ');
-  assert.equal(toPixelFontCaps('Ángel Íñiguez'), 'ANGEL INIGUEZ');
+test('capital accents stay as a full-height letter plus a pixel mark', () => {
+  const file = readFileSync(new URL('../public/fonts/PressStart2P-Regular.ttf', import.meta.url));
+  const copy = file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength);
+  configurePixelFont(copy);
+  const shaped = shapePixelText('JOSÉ MUÑOZ', pixelFontHasGlyph);
+  const acute = shaped.find((glyph) => glyph.source === 'É');
+  const tilde = shaped.find((glyph) => glyph.source === 'Ñ');
+  assert.ok(acute);
+  assert.ok(tilde);
+  assert.equal(acute.char, 'E');
+  assert.equal(acute.accent, 'acute');
+  assert.equal(tilde.char, 'N');
+  assert.equal(tilde.accent, 'tilde');
+  assert.equal(shaped.map((glyph) => glyph.source).join(''), 'JOSÉ MUÑOZ');
 });
 
 test('long text shrinks to 70% and then ellipsizes', () => {
@@ -38,5 +51,6 @@ test('limit and fallback copy', () => {
   assert.equal(siteLimitMessage().es, 'Hoy se alcanzó el límite de retratos con IA. Usa la versión sin IA.');
   assert.equal(FALLBACK_BUTTON_LABEL, 'Usar versión sin IA');
   assert.equal(GENERATING_LABEL, 'Creando tu retrato…');
-  assert.equal(FALLBACK_BADGE_LABEL, '«Versión sin IA»');
+  assert.equal(FALLBACK_BADGE_LABEL, 'Versión sin IA');
+  assert.doesNotMatch(FALLBACK_BADGE_LABEL, /[«»]/);
 });
