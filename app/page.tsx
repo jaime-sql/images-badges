@@ -8,7 +8,7 @@
  */
 
 import React, { useState } from 'react';
-import { BadgeState, ParticipantDetails, DitherConfig, BadgeTheme, BadgeStyle } from '@/types/badge';
+import { BadgeState, ParticipantDetails, DitherConfig, BadgeTheme, BadgeStyle, PortraitStyle, EventCardConfig, DEFAULT_EVENT_CARD } from '@/types/badge';
 import { DEFAULT_DITHER_CONFIG } from '@/lib/dither';
 import { removeImageBackground, SegmentationProgress } from '@/lib/segmentation';
 import ImageUploader from '@/components/ImageUploader';
@@ -16,7 +16,11 @@ import CameraModal from '@/components/CameraModal';
 import BadgeForm from '@/components/BadgeForm';
 import BadgeSettingsModal from '@/components/BadgeSettingsModal';
 import BadgePreview from '@/components/BadgePreview';
+import EventEditPanel from '@/components/EventEditPanel';
+import PortraitControls from '@/components/PortraitControls';
 import { Terminal, Shield, Sparkles, Image as ImageIcon, Sliders } from 'lucide-react';
+
+const PORTRAIT_API_URL = process.env.NEXT_PUBLIC_PORTRAIT_API_URL || '';
 
 const INITIAL_PARTICIPANT: ParticipantDetails = {
   name: '',
@@ -41,6 +45,11 @@ export default function Home() {
     segmentedImage: null,
     segmentationStatus: 'idle',
     segmentationError: null,
+    portraitStyle: 'dither',
+    eventCard: DEFAULT_EVENT_CARD,
+    pixelPortraitUrl: null,
+    pixelPortraitSource: null,
+    pixelPortraitMock: false,
   });
 
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -75,18 +84,38 @@ export default function Home() {
     setBadgeState((prev) => ({ ...prev, style }));
   };
 
+  const handlePortraitStyleChange = (portraitStyle: PortraitStyle) => {
+    setBadgeState((prev) => ({ ...prev, portraitStyle }));
+  };
+
+  const handleEventCardChange = (updated: Partial<EventCardConfig>) => {
+    setBadgeState((prev) => ({
+      ...prev,
+      eventCard: { ...prev.eventCard, ...updated },
+    }));
+  };
+
+  const clearPortrait = <T extends Partial<BadgeState>>(patch: T) => ({
+    ...patch,
+    pixelPortraitUrl: null,
+    pixelPortraitSource: null,
+    pixelPortraitMock: false,
+  });
+
   const releaseBlob = (url: string | null) => {
     if (url && url.startsWith('blob:')) URL.revokeObjectURL(url);
   };
 
   // Upload and webcam both cut the background out immediately.
-  // A failure keeps the original photo so the badge can still be made.
+  // A failure keeps the original photo so the dither badge can still be made.
+  // The pixel portrait waits for this cut-out and never paints the room.
   const acquirePhoto = (dataUrl: string) => {
     setSegmentationProgress(null);
     setBadgeState((prev) => {
       releaseBlob(prev.segmentedImage);
       return {
         ...prev,
+        ...clearPortrait({}),
         rawImage: dataUrl,
         segmentedImage: null,
         segmentationStatus: 'processing',
@@ -132,6 +161,7 @@ export default function Home() {
       releaseBlob(prev.segmentedImage);
       return {
         ...prev,
+        ...clearPortrait({}),
         rawImage: null,
         segmentedImage: null,
         segmentationStatus: 'idle',
@@ -145,6 +175,7 @@ export default function Home() {
       releaseBlob(prev.segmentedImage);
       return {
         ...prev,
+        ...clearPortrait({}),
         segmentedImage: null,
         segmentationStatus: 'idle',
         segmentationError: null,
@@ -199,6 +230,7 @@ export default function Home() {
     const dataUrl = canvas.toDataURL('image/png');
     setBadgeState((prev) => ({
       ...prev,
+      ...clearPortrait({}),
       rawImage: dataUrl,
       segmentedImage: null,
       segmentationStatus: 'idle',
@@ -293,11 +325,64 @@ export default function Home() {
             />
 
             {/* Step 2: Name Input & Settings at a Glance */}
+            <div className="border border-zinc-800 bg-[#0d0f14] p-4 flex flex-col gap-3">
+              <span className="font-mono text-xs font-bold tracking-wider text-emerald-400">
+                PORTRAIT STYLE
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handlePortraitStyleChange('dither')}
+                  className={`border px-3 py-2 font-mono text-[11px] text-left ${
+                    badgeState.portraitStyle === 'dither'
+                      ? 'border-emerald-400 bg-emerald-950/30 text-emerald-200'
+                      : 'border-zinc-800 text-zinc-400'
+                  }`}
+                >
+                  Dither
+                  <span className="block text-[10px] text-zinc-500">Classic 4-level</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePortraitStyleChange('pixel-portrait')}
+                  className={`border px-3 py-2 font-mono text-[11px] text-left ${
+                    badgeState.portraitStyle === 'pixel-portrait'
+                      ? 'border-emerald-400 bg-emerald-950/30 text-emerald-200'
+                      : 'border-zinc-800 text-zinc-400'
+                  }`}
+                >
+                  Pixel portrait
+                  <span className="block text-[10px] text-zinc-500">Outlined cel shading</span>
+                </button>
+              </div>
+            </div>
+
+            {badgeState.portraitStyle === 'pixel-portrait' && (
+              <>
+                <PortraitControls
+                  imageUrl={
+                    badgeState.segmentationStatus === 'success' ? badgeState.segmentedImage : null
+                  }
+                  apiUrl={PORTRAIT_API_URL}
+                  onResult={({ url, source, mock }) =>
+                    setBadgeState((prev) => ({
+                      ...prev,
+                      pixelPortraitUrl: url,
+                      pixelPortraitSource: source,
+                      pixelPortraitMock: mock,
+                    }))
+                  }
+                />
+                <EventEditPanel eventCard={badgeState.eventCard} onChange={handleEventCardChange} />
+              </>
+            )}
+
             <BadgeForm
               participant={badgeState.participant}
               dither={badgeState.dither}
               theme={badgeState.theme}
               style={badgeState.style}
+              portraitStyle={badgeState.portraitStyle}
               onParticipantChange={handleParticipantChange}
               onStyleChange={handleStyleChange}
               onOpenSettings={() => setIsSettingsOpen(true)}
@@ -337,9 +422,11 @@ export default function Home() {
         participant={badgeState.participant}
         dither={badgeState.dither}
         theme={badgeState.theme}
+        portraitStyle={badgeState.portraitStyle}
         onParticipantChange={handleParticipantChange}
         onDitherChange={handleDitherChange}
         onThemeChange={handleThemeChange}
+        onPortraitStyleChange={handlePortraitStyleChange}
       />
     </div>
   );

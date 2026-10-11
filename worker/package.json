@@ -1,0 +1,13 @@
+{
+  "name": "portrait-worker",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "check": "wrangler types && tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.42.0"
+  }
+}

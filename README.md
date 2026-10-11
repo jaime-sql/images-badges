@@ -1,3 +1,24 @@
+Client-side pixel badge generator. The classic dither styles stay in the browser. Pixel portrait can call a Cloudflare Worker, which is the only place that talks to the image API.
+
+## Portrait cost
+
+Each generation is one 1024×1024 Images edit. Quality defaults to `low` (`OPENAI_IMAGE_QUALITY`). At 1024×1024, output is 272 tokens for low and 1056 tokens for medium (OpenAI pricing page and image guide, 2026-10-11).
+
+Image and text input tokens are extra and depend on the photo. They are logged as `input_tokens` and `output_tokens` on each generation.
+
+| Model | Output price | PRICE_PER_IMAGE_LOW | PRICE_PER_IMAGE_MEDIUM |
+| --- | --- | --- | --- |
+| gpt-image-1 (`OPENAI_IMAGE_MODEL` default) | $40 / 1M output tokens | $0.011 | $0.042 |
+| gpt-image-1-mini | $8 / 1M output tokens | $0.002 | $0.008 |
+
+Caps, counted in KV per UTC day: `PER_IP_DAILY_LIMIT` (default 5) per visitor IP hash, and `SITE_DAILY_LIMIT` (default 50) for the whole site. At 50 a day that is about 1,500 a month. gpt-image-1 low output comes to about $16 a month before input tokens.
+
+`OPENAI_API_KEY` is a Worker secret (`wrangler secret put OPENAI_API_KEY`). It is never sent to the browser. The site only reads `NEXT_PUBLIC_PORTRAIT_API_URL` (the full `https://<worker>/portrait` URL). There is no sign-in and no server-side image storage.
+
+`MOCK_OPENAI` defaults to false and is not set in `worker/wrangler.toml`. For a free local check, put `MOCK_OPENAI=true` and `DEV=true` in `worker/.dev.vars`. Mock replies include `X-Portrait-Mock: 1`, and the badge UI shows a DEMO tag. `DEV=true` also allows `http://localhost:3000` in CORS. Production CORS is only `https://jaime-sql.github.io`.
+
+Replace the `PORTRAIT_KV` id in `worker/wrangler.toml` with a real KV namespace before the first deploy. `npm run check` inside `worker/` regenerates binding types and typechecks the Worker. The GitHub Action deploys the Worker on pushes to `main` that touch `worker/**`, and skips when `CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_ACCOUNT_ID` is missing.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 Tests (`npm test`) need Node.js 22 or newer.

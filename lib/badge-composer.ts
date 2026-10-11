@@ -20,6 +20,7 @@ import {
   processImageToDitheredCanvas,
 } from './dither';
 import { renderPixelSpriteBadge } from './pixel-sprite';
+import { renderEventCard } from './event-badge';
 
 export const BADGE_WIDTH = 640;
 export const BADGE_HEIGHT = 960;
@@ -440,6 +441,17 @@ function scalePortraitWithOutline(
 }
 
 export async function composeBadge(state: BadgeState): Promise<HTMLCanvasElement> {
+  if (state.portraitStyle === 'pixel-portrait') {
+    const canvas = document.createElement('canvas');
+    await renderEventCard(canvas, {
+      name: state.participant.name,
+      eventCard: state.eventCard,
+      portraitUrl: state.pixelPortraitUrl,
+      showFallbackLabel: state.pixelPortraitSource === 'fallback',
+    });
+    return canvas;
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = BADGE_WIDTH;
   canvas.height = BADGE_HEIGHT;

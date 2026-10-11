@@ -37,7 +37,8 @@ export default function ImageUploader({
   const [isDragging, setIsDragging] = useState(false);
 
   const handleFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
+    const looksLikeImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+    if (!looksLikeImage) {
       alert('Please upload a valid image file (PNG, JPG, WebP)');
       return;
     }

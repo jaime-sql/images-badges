@@ -7,7 +7,7 @@
  */
 
 import React from 'react';
-import { ParticipantDetails, DitherConfig, BadgeTheme, BadgeStyle } from '../types/badge';
+import { ParticipantDetails, DitherConfig, BadgeTheme, BadgeStyle, PortraitStyle } from '../types/badge';
 import { User, Sliders, Settings2 } from 'lucide-react';
 
 interface BadgeFormProps {
@@ -15,6 +15,7 @@ interface BadgeFormProps {
   dither: DitherConfig;
   theme: BadgeTheme;
   style: BadgeStyle;
+  portraitStyle: PortraitStyle;
   onParticipantChange: (updated: Partial<ParticipantDetails>) => void;
   onStyleChange: (style: BadgeStyle) => void;
   onOpenSettings: () => void;
@@ -25,6 +26,7 @@ export default function BadgeForm({
   dither,
   theme,
   style,
+  portraitStyle,
   onParticipantChange,
   onStyleChange,
   onOpenSettings,
@@ -178,7 +180,7 @@ export default function BadgeForm({
           >
             <span className="text-zinc-500 text-[9px] block">DITHER</span>
             <span className="text-emerald-400 font-bold truncate block uppercase">
-              {dither.algorithm.replace('-', ' ')}
+              {portraitStyle === 'pixel-portrait' ? 'PIXEL PORTRAIT' : dither.algorithm.replace('-', ' ')}
             </span>
           </div>
 

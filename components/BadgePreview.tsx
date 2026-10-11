@@ -114,6 +114,12 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
             RENDER_SYNC...
           </div>
         )}
+
+        {badgeState.portraitStyle === 'pixel-portrait' && badgeState.pixelPortraitMock && (
+          <span className="absolute left-1/2 top-[38%] -translate-x-1/2 border border-white bg-black px-2 py-1 font-mono text-[11px] font-bold tracking-widest text-white">
+            DEMO
+          </span>
+        )}
       </div>
 
       {/* Control Actions */}
@@ -158,9 +164,11 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
       </div>
 
       <span className="font-mono text-[10px] text-zinc-500 text-center">
-        {badgeState.style === 'pixel-sprite'
-          ? '640x960 PNG // PIXEL SPRITE // 100% CLIENT-SIDE'
-          : '640x960 HIGH-RES PNG // 4-LEVEL DITHERED // 100% CLIENT-SIDE'}
+        {badgeState.portraitStyle === 'pixel-portrait'
+          ? '640x960 EVENT CARD // PIXEL PORTRAIT // 128 GRID'
+          : badgeState.style === 'pixel-sprite'
+            ? '640x960 PNG // PIXEL SPRITE // 100% CLIENT-SIDE'
+            : '640x960 HIGH-RES PNG // 4-LEVEL DITHERED // 100% CLIENT-SIDE'}
       </span>
     </div>
   );
