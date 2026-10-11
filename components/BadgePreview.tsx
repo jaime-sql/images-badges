@@ -68,7 +68,8 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const safeName = (badgeState.participant.name || 'badge').toLowerCase().replace(/\s+/g, '-');
-      a.download = `badge-${badgeState.participant.ticketNumber || '001'}-${safeName}.png`;
+      const styleTag = badgeState.style === 'pixel-sprite' ? 'pixel-sprite' : 'classic';
+      a.download = `badge-${styleTag}-${badgeState.participant.ticketNumber || '001'}-${safeName}.png`;
       a.href = url;
       document.body.appendChild(a);
       a.click();
@@ -157,7 +158,9 @@ export default function BadgePreview({ badgeState }: BadgePreviewProps) {
       </div>
 
       <span className="font-mono text-[10px] text-zinc-500 text-center">
-        640x960 HIGH-RES PNG // 4-LEVEL DITHERED // 100% CLIENT-SIDE
+        {badgeState.style === 'pixel-sprite'
+          ? '640x960 PNG // PIXEL SPRITE // 100% CLIENT-SIDE'
+          : '640x960 HIGH-RES PNG // 4-LEVEL DITHERED // 100% CLIENT-SIDE'}
       </span>
     </div>
   );

@@ -7,14 +7,16 @@
  */
 
 import React from 'react';
-import { ParticipantDetails, DitherConfig, BadgeTheme } from '../types/badge';
+import { ParticipantDetails, DitherConfig, BadgeTheme, BadgeStyle } from '../types/badge';
 import { User, Sliders, Settings2 } from 'lucide-react';
 
 interface BadgeFormProps {
   participant: ParticipantDetails;
   dither: DitherConfig;
   theme: BadgeTheme;
+  style: BadgeStyle;
   onParticipantChange: (updated: Partial<ParticipantDetails>) => void;
+  onStyleChange: (style: BadgeStyle) => void;
   onOpenSettings: () => void;
 }
 
@@ -22,7 +24,9 @@ export default function BadgeForm({
   participant,
   dither,
   theme,
+  style,
   onParticipantChange,
+  onStyleChange,
   onOpenSettings,
 }: BadgeFormProps) {
   const isNameEmpty = !participant.name?.trim();
@@ -79,6 +83,57 @@ export default function BadgeForm({
         </div>
       </div>
 
+      {/* Style switch: classic dither sits beside the pixel-sprite card. */}
+      <div className="border border-zinc-800 bg-[#0d0f14] p-4 flex flex-col gap-3">
+        <span className="font-mono text-xs font-bold tracking-wider text-emerald-400">
+          03 // BADGE_STYLE
+        </span>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => onStyleChange('classic')}
+            aria-pressed={style === 'classic'}
+            className={`border px-3 py-3 text-left font-mono transition ${
+              style === 'classic'
+                ? 'border-emerald-400 bg-emerald-950/40 text-emerald-200'
+                : 'border-zinc-800 bg-black/40 text-zinc-400 hover:border-zinc-600'
+            }`}
+          >
+            <span className="block text-xs font-bold">CLASSIC DITHER</span>
+            <span className="mt-1 block text-[10px] text-zinc-500">4-level portrait</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onStyleChange('pixel-sprite')}
+            aria-pressed={style === 'pixel-sprite'}
+            className={`border px-3 py-3 text-left font-mono transition ${
+              style === 'pixel-sprite'
+                ? 'border-[#a7c957] bg-[#102a14] text-[#eef7c8]'
+                : 'border-zinc-800 bg-black/40 text-zinc-400 hover:border-zinc-600'
+            }`}
+          >
+            <span className="block text-xs font-bold">PIXEL SPRITE</span>
+            <span className="mt-1 block text-[10px] opacity-70">Game Boy card</span>
+          </button>
+        </div>
+
+        {style === 'pixel-sprite' && (
+          <div>
+            <label className="block text-zinc-300 font-bold mb-1.5 text-xs font-mono" htmlFor="sprite-type">
+              TYPE CHIP
+            </label>
+            <input
+              id="sprite-type"
+              type="text"
+              value={participant.spriteType}
+              onChange={(e) => onParticipantChange({ spriteType: e.target.value })}
+              className="w-full border border-zinc-700 bg-black px-3 py-2 font-mono text-xs text-zinc-100 placeholder:text-zinc-600 focus:border-[#a7c957] focus:outline-none"
+              placeholder="Data Engineer"
+            />
+          </div>
+        )}
+      </div>
+
       {/* 2. Badge Settings Menu At A Glance */}
       <div className="border border-zinc-800 bg-[#0d0f14] p-4 flex flex-col gap-3">
         <div className="flex items-center justify-between">
@@ -131,9 +186,9 @@ export default function BadgeForm({
             onClick={onOpenSettings}
             className="border border-zinc-800 bg-black/50 p-2 cursor-pointer hover:border-zinc-700 transition"
           >
-            <span className="text-zinc-500 text-[9px] block">THEME</span>
+            <span className="text-zinc-500 text-[9px] block">STYLE</span>
             <span className="text-zinc-200 font-bold truncate block uppercase">
-              {theme.replace('-', ' ')}
+              {style === 'pixel-sprite' ? 'PIXEL SPRITE' : theme.replace('-', ' ')}
             </span>
           </div>
         </div>

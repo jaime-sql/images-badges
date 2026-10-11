@@ -66,6 +66,8 @@ export interface ParticipantDetails {
   handle: string;
   role: string;
   track: string;
+  /** Editable label on the pixel-sprite type chip. */
+  spriteType: string;
   ticketNumber: string;
   qrPayload: string;
   eventTitle: string;
@@ -77,6 +79,9 @@ export interface ParticipantDetails {
  * Badge visual theme options
  */
 export type BadgeTheme = 'dark-brutalist' | 'matrix-green' | 'amber-crt' | 'paper-light';
+
+/** Classic 4-level dither badge, or the Game Boy pixel-sprite card. */
+export type BadgeStyle = 'classic' | 'pixel-sprite';
 
 export interface BadgeThemeConfig {
   id: BadgeTheme;
@@ -96,6 +101,7 @@ export interface BadgeState {
   participant: ParticipantDetails;
   dither: DitherConfig;
   theme: BadgeTheme;
+  style: BadgeStyle;
   /** Raw image file or data URL (before background removal) */
   rawImage: string | null;
   /** Image after background removal mask applied */
