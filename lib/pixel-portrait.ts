@@ -1,8 +1,8 @@
 /**
  * Pixel-portrait post process.
  * 128×128 grid, six grays, no dither, 1px outline, 2px light rim, then ×4 nearest upscale.
- * The AI path quantizes a returned portrait. The browser fallback smooths with
- * several Kuwahara passes, posterizes to flat grays, and drops speckle.
+ * The AI path quantizes a returned portrait. The browser fallback frames the
+ * head, keeps the person's skin band, and inks eyes, brows, and glasses.
  */
 
 import { createImageData } from './dither';
@@ -226,13 +226,13 @@ function sampleBilinear(
   out[di + 3] = Math.max(0, Math.min(255, Math.round(alpha / weight)));
 }
 
-function opaqueSpan(
+function opaqueBounds(
   data: Uint8ClampedArray,
   width: number,
   y: number,
   minX: number,
   maxX: number
-): number {
+): { left: number; right: number; span: number } {
   let left = -1;
   let right = -1;
   for (let x = minX; x <= maxX; x++) {
@@ -240,39 +240,156 @@ function opaqueSpan(
     if (left < 0) left = x;
     right = x;
   }
-  return left < 0 ? 0 : right - left + 1;
+  return { left, right, span: left < 0 ? 0 : right - left + 1 };
+}
+
+const HEAD_OF_PANEL = 0.45;
+
+interface EyeRow {
+  y: number;
+  left: number;
+  right: number;
+  span: number;
 }
 
 /**
- * Eyes sit about 45% of the way from the crown to the shoulder line when the
- * head is narrower than the torso. A bust that is already square keeps the
- * eyes near 36% of its height, which the frame then places at 40%.
+ * The eye line is the strongest thin dark feature sitting on skin: two pupils,
+ * brows, or a glasses rim. A wide torso or a uniformly dark beard does not qualify.
  */
-function estimateEyeAndCrop(
+function findEyeRow(
   data: Uint8ClampedArray,
   width: number,
   minX: number,
   minY: number,
   maxX: number,
   maxY: number
-): { cropX: number; cropY: number; cropW: number; cropH: number; eyeInCrop: number } {
-  const rows = maxY - minY + 1;
-  const topLimit = minY + Math.max(1, Math.floor(rows * 0.18));
-  const topSpans: number[] = [];
-  for (let y = minY; y <= topLimit; y++) {
-    topSpans.push(opaqueSpan(data, width, y, minX, maxX));
+): EyeRow | null {
+  const bboxH = maxY - minY + 1;
+  const refLimit = minY + Math.max(4, Math.floor(bboxH * 0.16));
+  const refSpans: number[] = [];
+  for (let y = minY; y <= refLimit; y++) {
+    const span = opaqueBounds(data, width, y, minX, maxX).span;
+    if (span >= 12) refSpans.push(span);
   }
-  topSpans.sort((a, b) => a - b);
-  const headWidth = topSpans[Math.floor(topSpans.length / 2)] ?? 1;
+  refSpans.sort((a, b) => a - b);
+  const ref = refSpans[Math.floor(refSpans.length * 0.35)] ?? 32;
+  const spanCap = Math.min(ref * 1.9, width * 0.72);
+  const yLimit = minY + Math.floor(bboxH * 0.7);
+  let bestScore = 0;
+  let best: EyeRow | null = null;
 
-  // The shoulder line is the first widening under the head. The widest row is
-  // often the bottom of a jacket, which would push the eyes too high.
-  const search = minY + Math.floor(rows * 0.2);
+  for (let y = minY + 2; y <= yLimit - 2; y++) {
+    const bounds = opaqueBounds(data, width, y, minX, maxX);
+    if (bounds.span < 12 || bounds.span > spanCap || bounds.left < 0) continue;
+    const samples: { x: number; lum: number }[] = [];
+    for (let x = bounds.left; x <= bounds.right; x++) {
+      const pixel = y * width + x;
+      if (data[pixel * 4 + 3] < 24) continue;
+      samples.push({ x, lum: opaqueLuminance(data, pixel) });
+    }
+    if (samples.length < 12) continue;
+    const sorted = samples.map((sample) => sample.lum).sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length * 0.5)] ?? 0;
+    if (median < 48) continue;
+    const hits: number[] = [];
+    for (const sample of samples) {
+      let sum = 0;
+      let n = 0;
+      for (const dy of [-3, -2, 2, 3]) {
+        const yy = y + dy;
+        if (yy < minY || yy > maxY) continue;
+        const pixel = yy * width + sample.x;
+        if (data[pixel * 4 + 3] < 24) continue;
+        sum += opaqueLuminance(data, pixel);
+        n += 1;
+      }
+      if (n < 2) continue;
+      if (sample.lum < median - 22 && sample.lum < sum / n - 12 && sample.lum < 115) hits.push(sample.x);
+    }
+    if (hits.length < 4 || hits.length > samples.length * 0.45) continue;
+    const groups: number[][] = [[hits[0]]];
+    for (let i = 1; i < hits.length; i++) {
+      const gap = Math.max(6, Math.floor(bounds.span * 0.04));
+      if (hits[i] - groups[groups.length - 1][groups[groups.length - 1].length - 1] > gap) groups.push([hits[i]]);
+      else groups[groups.length - 1].push(hits[i]);
+    }
+    const cx0 = bounds.left + bounds.span * 0.12;
+    const cx1 = bounds.left + bounds.span * 0.88;
+    const central = groups.filter((group) => {
+      if (group.length < 2) return false;
+      const mid = (group[0] + group[group.length - 1]) / 2;
+      return mid >= cx0 && mid <= cx1;
+    });
+    if (central.length === 0) continue;
+    let score = central.reduce((sum, group) => sum + group.length, 0);
+    if (central.length >= 2 && central.length <= 4) score *= 1.6;
+    const aboveY = y - Math.max(4, Math.floor(bounds.span * 0.18));
+    if (aboveY >= minY) {
+      const above = opaqueBounds(data, width, aboveY, minX, maxX);
+      const x0 = Math.floor(above.left + above.span * 0.25);
+      const x1 = Math.ceil(above.left + above.span * 0.75);
+      const forehead: number[] = [];
+      for (let x = x0; x <= x1; x++) {
+        const pixel = aboveY * width + x;
+        if (data[pixel * 4 + 3] < 24) continue;
+        forehead.push(opaqueLuminance(data, pixel));
+      }
+      if (forehead.length >= 8) {
+        forehead.sort((a, b) => a - b);
+        const fore = forehead[Math.floor(forehead.length * 0.5)] ?? median;
+        if (fore > median + 12) score *= 1.25;
+        else if (fore + 8 < median) score *= 0.65;
+      }
+    }
+    score += median * 0.08;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { y, left: bounds.left, right: bounds.right, span: bounds.span };
+    }
+  }
+  return best;
+}
+
+function measureHead(
+  data: Uint8ClampedArray,
+  width: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): { headWidth: number; centerX: number; eyeY: number } {
+  const eye = findEyeRow(data, width, minX, minY, maxX, maxY);
+  if (eye) {
+    const reach = Math.max(4, Math.floor(eye.span * 0.42));
+    const y0 = Math.max(minY, eye.y - reach);
+    const spans: number[] = [eye.span];
+    for (let y = y0; y < eye.y; y++) {
+      const span = opaqueBounds(data, width, y, minX, maxX).span;
+      if (span >= 12 && span <= eye.span * 1.45) spans.push(span);
+    }
+    spans.sort((a, b) => a - b);
+    const headWidth = Math.max(8, spans[Math.floor(spans.length * 0.65)] ?? eye.span);
+    let centerX = (eye.left + eye.right) / 2;
+    if (eye.span > headWidth * 1.35) {
+      const mid = Math.max(minY, eye.y - Math.max(2, Math.floor(headWidth * 0.2)));
+      const top = opaqueBounds(data, width, mid, minX, maxX);
+      if (top.span >= 8) centerX = (top.left + top.right) / 2;
+    }
+    return { headWidth, centerX, eyeY: eye.y };
+  }
+
+  const rows = maxY - minY + 1;
+  const topLimit = minY + Math.max(1, Math.floor(rows * 0.22));
+  const topSpans: number[] = [];
+  for (let y = minY; y <= topLimit; y++) topSpans.push(opaqueBounds(data, width, y, minX, maxX).span);
+  topSpans.sort((a, b) => a - b);
+  const headWidth = Math.max(8, topSpans[Math.floor(topSpans.length * 0.6)] ?? 8);
+  const search = minY + Math.floor(rows * 0.18);
   let shoulderY = -1;
   let run = 0;
   for (let y = search; y <= maxY; y++) {
-    const span = opaqueSpan(data, width, y, minX, maxX);
-    if (span > headWidth * 1.28) {
+    const span = opaqueBounds(data, width, y, minX, maxX).span;
+    if (span > headWidth * 1.22) {
       run += 1;
       if (run >= 3) {
         shoulderY = y - 2;
@@ -282,39 +399,21 @@ function estimateEyeAndCrop(
       run = 0;
     }
   }
-
   const hasShoulders = shoulderY > minY + 4;
-  const eyeAbs = hasShoulders ? minY + (shoulderY - minY) * 0.46 : minY + Math.min(rows, headWidth * 1.15) * 0.4;
-  const cropBottom = hasShoulders
-    ? Math.min(maxY, Math.round(shoulderY + (shoulderY - minY) * 0.55))
-    : Math.min(maxY, minY + Math.round(Math.max(rows * 0.72, headWidth * 1.2)));
-
-  let left = maxX;
-  let right = minX;
-  for (let y = minY; y <= cropBottom; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      if (data[(y * width + x) * 4 + 3] < 24) continue;
-      if (x < left) left = x;
-      if (x > right) right = x;
-    }
+  const eyeY = hasShoulders ? minY + (shoulderY - minY) * 0.46 : minY + headWidth * 0.42;
+  const band = opaqueBounds(data, width, Math.max(minY, Math.min(maxY, Math.round(eyeY))), minX, maxX);
+  let centerX = band.span > 0 ? (band.left + band.right) / 2 : (minX + maxX) / 2;
+  if (band.span > headWidth * 1.35) {
+    const mid = Math.min(maxY, minY + Math.max(1, Math.floor((topLimit - minY) * 0.55)));
+    const top = opaqueBounds(data, width, mid, minX, maxX);
+    if (top.span > 0) centerX = (top.left + top.right) / 2;
   }
-  if (right < left) {
-    left = minX;
-    right = maxX;
-  }
-
-  return {
-    cropX: left,
-    cropY: minY,
-    cropW: Math.max(1, right - left + 1),
-    cropH: Math.max(1, cropBottom - minY + 1),
-    eyeInCrop: eyeAbs - minY,
-  };
+  return { headWidth, centerX, eyeY };
 }
 
 /**
- * Square head-and-shoulders frame. Eyes land near 40% from the top.
- * Cut-outs use the opaque bounds. Full photos use an upper-biased square.
+ * Square frame. The head is about 45% of the width, eyes sit at 40% from the
+ * top, and the shoulders run off the bottom edge instead of shrinking the face.
  */
 export function frameHeadAndShoulders(source: ImageData, size: number): ImageData {
   const { width, height, data } = source;
@@ -338,48 +437,28 @@ export function frameHeadAndShoulders(source: ImageData, size: number): ImageDat
   }
 
   const cutout = transparent > width * height * 0.08 && maxX >= minX;
-  let cropX = 0;
-  let cropY = 0;
-  let cropW = width;
-  let cropH = height;
-  let eyeInCrop = height * 0.4;
+  const out = new Uint8ClampedArray(size * size * 4);
+  let centerX = width / 2;
+  let eyeY = height * 0.36;
+  let scale = Math.min(size / Math.max(1, width), size / Math.max(1, height)) * 0.92;
   if (cutout) {
-    const framed = estimateEyeAndCrop(data, width, minX, minY, maxX, maxY);
-    cropX = framed.cropX;
-    cropY = framed.cropY;
-    cropW = framed.cropW;
-    cropH = framed.cropH;
-    eyeInCrop = framed.eyeInCrop;
+    const head = measureHead(data, width, minX, minY, maxX, maxY);
+    centerX = head.centerX;
+    eyeY = head.eyeY;
+    scale = (size * HEAD_OF_PANEL) / head.headWidth;
   } else {
     const side = Math.min(width, height);
-    cropW = side;
-    cropH = side;
-    cropX = Math.floor((width - side) / 2);
-    cropY = height > width ? Math.floor((height - side) * 0.08) : Math.floor((height - side) / 2);
-    eyeInCrop = cropH * 0.4;
+    centerX = width / 2;
+    eyeY = (height > width ? (height - side) * 0.08 : (height - side) / 2) + side * 0.4;
+    scale = (size * 0.92) / side;
   }
 
-  const out = new Uint8ClampedArray(size * size * 4);
-  const margin = Math.max(6, Math.round(size * 0.04));
-  const above = Math.max(1, eyeInCrop);
-  const below = Math.max(1, cropH - eyeInCrop);
-  const scaleTop = Math.max(0.01, (size * 0.4 - margin) / above);
-  const scaleBottom = Math.max(0.01, (size * 0.9 - size * 0.4) / below);
-  const scaleW = Math.max(0.01, (size - margin * 2) / cropW);
-  const scale = cutout
-    ? Math.min(scaleW, scaleTop, scaleBottom)
-    : Math.min((size * 0.92) / cropW, (size * 0.92) / cropH);
-  const drawnW = cropW * scale;
-  const drawnH = cropH * scale;
-  const dx = (size - drawnW) / 2;
-  let dy = size * 0.4 - eyeInCrop * scale;
-  if (dy < margin) dy = margin;
-  if (dy > size - margin - drawnH) dy = Math.max(margin, size - margin - drawnH);
-
+  const destEyeY = size * 0.4;
+  const destCenterX = (size - 1) / 2;
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const sx = cropX + (x - dx) / scale;
-      const sy = cropY + (y - dy) / scale;
+      const sx = centerX + (x - destCenterX) / scale;
+      const sy = eyeY + (y - destEyeY) / scale;
       sampleBilinear(source, sx, sy, out, (y * size + x) * 4);
     }
   }
@@ -775,10 +854,10 @@ export function kuwahara(source: ImageData, radius: number): ImageData {
   return createImageData(out, width, height);
 }
 
-/** Three shrinking Kuwahara passes. Stronger than a single box blur, edges stay. */
+/** Two small Kuwahara passes. Enough to flatten skin, not enough to erase eyes. */
 export function smoothForDrawing(source: ImageData): ImageData {
   let current = source;
-  for (const radius of [5, 4, 3]) current = kuwahara(current, radius);
+  for (const radius of [2, 2]) current = kuwahara(current, radius);
   return current;
 }
 
@@ -786,7 +865,7 @@ export function smoothForDrawing(source: ImageData): ImageData {
  * Fold connected regions smaller than `minSize` into the neighboring gray.
  * Isolated speckle on the 128 grid disappears; large flat shapes stay.
  */
-export function mergeTinyRegions(source: ImageData, minSize = 6): ImageData {
+export function mergeTinyRegions(source: ImageData, minSize = 6, protect?: Uint8Array): ImageData {
   const { width, height } = source;
   const count = width * height;
   let index = new Int16Array(count);
@@ -822,6 +901,7 @@ export function mergeTinyRegions(source: ImageData, minSize = 6): ImageData {
         }
       }
       if (region.length >= minSize) continue;
+      if (protect && region.some((pixel) => protect[pixel])) continue;
       const votes = [0, 0, 0, 0, 0, 0];
       for (const pixel of region) {
         const x = pixel % width;
@@ -951,8 +1031,66 @@ function dropSmallComponents(mask: Uint8Array, width: number, height: number, mi
   }
 }
 
+function keepLargestComponent(mask: Uint8Array, width: number, height: number): void {
+  const count = mask.length;
+  const labels = new Int32Array(count);
+  const sizes: number[] = [0];
+  const stack: number[] = [];
+  let label = 0;
+  for (let start = 0; start < count; start++) {
+    if (mask[start] === 0 || labels[start] !== 0) continue;
+    label += 1;
+    let size = 0;
+    stack.length = 0;
+    stack.push(start);
+    labels[start] = label;
+    while (stack.length > 0) {
+      const pixel = stack.pop() as number;
+      size += 1;
+      const x = pixel % width;
+      const y = (pixel - x) / width;
+      const neighbors = [
+        x > 0 ? pixel - 1 : -1,
+        x + 1 < width ? pixel + 1 : -1,
+        y > 0 ? pixel - width : -1,
+        y + 1 < height ? pixel + width : -1,
+      ];
+      for (const neighbor of neighbors) {
+        if (neighbor < 0 || mask[neighbor] === 0 || labels[neighbor] !== 0) continue;
+        labels[neighbor] = label;
+        stack.push(neighbor);
+      }
+    }
+    sizes[label] = size;
+  }
+  if (label === 0) return;
+  let best = 1;
+  for (let id = 2; id <= label; id++) {
+    if (sizes[id] > sizes[best]) best = id;
+  }
+  const keep = new Uint8Array(label + 1);
+  keep[best] = 1;
+  for (let pixel = 0; pixel < count; pixel++) {
+    if (labels[pixel] !== best) continue;
+    const x = pixel % width;
+    const y = (pixel - x) / width;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const xx = x + dx;
+        const yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+        const other = labels[yy * width + xx];
+        if (other > 0) keep[other] = 1;
+      }
+    }
+  }
+  for (let pixel = 0; pixel < count; pixel++) {
+    if (!keep[labels[pixel]]) mask[pixel] = 0;
+  }
+}
+
 function dropThinProtrusions(mask: Uint8Array, width: number, height: number): void {
-  for (let pass = 0; pass < 6; pass++) {
+  for (let pass = 0; pass < 3; pass++) {
     const remove: number[] = [];
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -985,6 +1123,7 @@ export function cleanCutoutMask(source: ImageData): ImageData {
     else transparent += 1;
   }
   if (transparent > count * 0.08) {
+    keepLargestComponent(mask, width, height);
     const opened = dilateMask(erodeMask(mask, width, height), width, height);
     const closed = erodeMask(dilateMask(opened, width, height), width, height);
     mask.set(closed);
@@ -1006,6 +1145,325 @@ export function cleanCutoutMask(source: ImageData): ImageData {
   return createImageData(out, width, height);
 }
 
+export type SkinKind = 'light' | 'medium' | 'dark';
+
+export interface SkinBand {
+  shadow: number;
+  base: number;
+  highlight: number;
+}
+
+/** Light uses the two lightest grays plus a one-step shadow. Dark never climbs past #6B6B73. */
+export function skinPalette(kind: SkinKind): SkinBand {
+  if (kind === 'light') return { shadow: 3, base: 4, highlight: 5 };
+  if (kind === 'medium') return { shadow: 2, base: 3, highlight: 3 };
+  return { shadow: 1, base: 2, highlight: 2 };
+}
+
+export function classifySkin(faceMedian: number): SkinKind {
+  // Buckets follow the nearest palette gray, so a dark cheek is not stretched up.
+  if (faceMedian >= 182) return 'light';
+  if (faceMedian >= 132) return 'medium';
+  return 'dark';
+}
+
+function sampleLuminance(
+  source: ImageData,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): number[] {
+  const samples: number[] = [];
+  const yStart = Math.max(0, y0);
+  const yEnd = Math.min(source.height - 1, y1);
+  const xStart = Math.max(0, x0);
+  const xEnd = Math.min(source.width - 1, x1);
+  for (let y = yStart; y <= yEnd; y++) {
+    for (let x = xStart; x <= xEnd; x++) {
+      const pixel = y * source.width + x;
+      if (!isOpaque(source.data, pixel)) continue;
+      samples.push(opaqueLuminance(source.data, pixel));
+    }
+  }
+  samples.sort((a, b) => a - b);
+  return samples;
+}
+
+/** Cheek median of the framed portrait, before any contrast change. Glasses sit between the two patches. */
+export function faceMedianLuminance(source: ImageData): number {
+  const { width, height } = source;
+  const cheeks = [
+    sampleLuminance(source, Math.floor(width * 0.36), Math.floor(height * 0.36), Math.floor(width * 0.46), Math.floor(height * 0.48)),
+    sampleLuminance(source, Math.floor(width * 0.54), Math.floor(height * 0.36), Math.floor(width * 0.64), Math.floor(height * 0.48)),
+  ].flat();
+  cheeks.sort((a, b) => a - b);
+  const samples = cheeks.length >= 12 ? cheeks : sampleLuminance(source, 0, 0, width - 1, height - 1);
+  if (samples.length === 0) return 128;
+  const mid = samples[Math.floor(samples.length * 0.5)] ?? 128;
+  const upper = samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.75))] ?? mid;
+  // A beard or a hard shadow makes the median darker than the skin. When the
+  // upper quartile jumps, that quartile is the lit face; otherwise the median stands.
+  return upper > mid + 48 ? upper : mid;
+}
+
+function blurLuminance(source: ImageData, sigma: number): Float32Array {
+  const { width, height, data } = source;
+  const radius = Math.max(1, Math.ceil(sigma * 2));
+  const kernel: number[] = [];
+  let kernelSum = 0;
+  for (let k = -radius; k <= radius; k++) {
+    const weight = Math.exp(-(k * k) / (2 * sigma * sigma));
+    kernel.push(weight);
+    kernelSum += weight;
+  }
+  const lum = new Float32Array(width * height);
+  const mask = new Uint8Array(width * height);
+  for (let pixel = 0; pixel < lum.length; pixel++) {
+    if (data[pixel * 4 + 3] < 20) continue;
+    mask[pixel] = 1;
+    lum[pixel] = opaqueLuminance(data, pixel);
+  }
+  const horizontal = new Float32Array(width * height);
+  const horizontalWeight = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      let weight = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const xx = x + k;
+        if (xx < 0 || xx >= width) continue;
+        const pixel = y * width + xx;
+        if (!mask[pixel]) continue;
+        const w = kernel[k + radius];
+        sum += lum[pixel] * w;
+        weight += w;
+      }
+      const pixel = y * width + x;
+      horizontal[pixel] = sum;
+      horizontalWeight[pixel] = weight;
+    }
+  }
+  const out = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      let weight = 0;
+      for (let k = -radius; k <= radius; k++) {
+        const yy = y + k;
+        if (yy < 0 || yy >= height) continue;
+        const pixel = yy * width + x;
+        const w = kernel[k + radius];
+        sum += horizontal[pixel] * w;
+        weight += horizontalWeight[pixel] * w;
+      }
+      const pixel = y * width + x;
+      out[pixel] = weight > kernelSum * 0.15 ? sum / weight : lum[pixel];
+    }
+  }
+  return out;
+}
+
+/**
+ * Fine-scale dark features: pupils, brows, glasses, and the mouth line.
+ * A pixel has to be darker than the slightly wider blur and darker than its neighbors.
+ */
+export function detectDarkFeatures(source: ImageData): Uint8Array {
+  const { width, height } = source;
+  const fine = blurLuminance(source, 0.8);
+  const coarse = blurLuminance(source, 2.1);
+  const protect = new Uint8Array(width * height);
+  for (let y = 1; y < height - 1; y++) {
+    const ny = y / height;
+    const eyeBand = ny >= 0.33 && ny <= 0.48;
+    const mouthBand = ny >= 0.5 && ny <= 0.56;
+    if (!eyeBand && !mouthBand) continue;
+    for (let x = 1; x < width - 1; x++) {
+      const nx = x / width;
+      if (eyeBand && (nx < 0.3 || nx > 0.7)) continue;
+      if (!eyeBand && (nx < 0.4 || nx > 0.6)) continue;
+      const pixel = y * width + x;
+      if (!isOpaque(source.data, pixel)) continue;
+      const score = coarse[pixel] - fine[pixel];
+      if (score < 11) continue;
+      let darker = 0;
+      const neighbors = [pixel - 1, pixel + 1, pixel - width, pixel + width];
+      for (const neighbor of neighbors) {
+        if (fine[neighbor] > fine[pixel] + 3) darker += 1;
+      }
+      if (darker >= 2) protect[pixel] = 1;
+    }
+  }
+  for (let pass = 0; pass < 2; pass++) {
+    const clear: number[] = [];
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const pixel = y * width + x;
+        if (!protect[pixel]) continue;
+        if (protect[pixel - 1] && protect[pixel + 1] && protect[pixel - width] && protect[pixel + width]) {
+          clear.push(pixel);
+        }
+      }
+    }
+    for (const pixel of clear) protect[pixel] = 0;
+  }
+  const mouthY0 = Math.floor(height * 0.5);
+  const mouthY1 = Math.floor(height * 0.56);
+  const mouthX0 = Math.floor(width * 0.4);
+  const mouthX1 = Math.floor(width * 0.6);
+  let mouthOn = 0;
+  let mouthCount = 0;
+  for (let y = mouthY0; y <= mouthY1; y++) {
+    for (let x = mouthX0; x <= mouthX1; x++) {
+      mouthCount += 1;
+      if (protect[y * width + x]) mouthOn += 1;
+    }
+  }
+  if (mouthCount > 0 && mouthOn > mouthCount * 0.22) {
+    for (let y = mouthY0; y <= mouthY1; y++) {
+      for (let x = mouthX0; x <= mouthX1; x++) protect[y * width + x] = 0;
+    }
+  }
+  return protect;
+}
+
+function downsampleMask(mask: Uint8Array, srcW: number, srcH: number, dstW: number, dstH: number): Uint8Array {
+  const out = new Uint8Array(dstW * dstH);
+  for (let y = 0; y < dstH; y++) {
+    const y0 = Math.floor((y * srcH) / dstH);
+    const y1 = Math.max(y0 + 1, Math.floor(((y + 1) * srcH) / dstH));
+    for (let x = 0; x < dstW; x++) {
+      const x0 = Math.floor((x * srcW) / dstW);
+      const x1 = Math.max(x0 + 1, Math.floor(((x + 1) * srcW) / dstW));
+      let on = 0;
+      for (let yy = y0; yy < y1 && !on; yy++) {
+        for (let xx = x0; xx < x1; xx++) {
+          if (mask[yy * srcW + xx]) {
+            on = 1;
+            break;
+          }
+        }
+      }
+      out[y * dstW + x] = on;
+    }
+  }
+  return out;
+}
+
+function skinIndex(kind: SkinKind, rank: number): number {
+  const band = skinPalette(kind);
+  if (kind === 'light') {
+    if (rank < 0.3) return band.shadow;
+    if (rank < 0.72) return band.base;
+    return band.highlight;
+  }
+  if (rank < 0.42) return band.shadow;
+  return band.base;
+}
+
+/**
+ * Map the face into the skin band chosen from the original cheek median.
+ * Other pixels keep the nearest gray, with no stretch toward white.
+ */
+export function posterizeKeepingSkin(source: ImageData, features: Uint8Array, original?: ImageData): ImageData {
+  const { width, height } = source;
+  const median = faceMedianLuminance(original ?? source);
+  const kind = classifySkin(median);
+  const skinLuma: number[] = [];
+  const skinAt: number[] = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixel = y * width + x;
+      if (!isOpaque(source.data, pixel) || features[pixel]) continue;
+      const nx = x / width;
+      const ny = y / height;
+      if (nx < 0.3 || nx > 0.7 || ny < 0.18 || ny > 0.66) continue;
+      const lum = opaqueLuminance(source.data, pixel);
+      if (lum < median * 0.62) continue;
+      skinLuma.push(lum);
+      skinAt.push(pixel);
+    }
+  }
+  const order = skinLuma.map((lum, index) => ({ lum, index }));
+  order.sort((a, b) => a.lum - b.lum);
+  const rankOf = new Float32Array(skinLuma.length);
+  for (let i = 0; i < order.length; i++) rankOf[order[i].index] = order.length <= 1 ? 0.5 : i / (order.length - 1);
+  const rankAt = new Float32Array(width * height);
+  rankAt.fill(-1);
+  for (let i = 0; i < skinAt.length; i++) rankAt[skinAt[i]] = rankOf[i];
+
+  const out = new Uint8ClampedArray(source.data);
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    const i = pixel * 4;
+    if (out[i + 3] < 20) {
+      out[i] = 0;
+      out[i + 1] = 0;
+      out[i + 2] = 0;
+      out[i + 3] = 0;
+      continue;
+    }
+    const index = rankAt[pixel] >= 0 ? skinIndex(kind, rankAt[pixel]) : nearestPaletteIndex(out[i], out[i + 1], out[i + 2]);
+    const color = PIXEL_PALETTE[index];
+    out[i] = color.r;
+    out[i + 1] = color.g;
+    out[i + 2] = color.b;
+    out[i + 3] = 255;
+  }
+  return createImageData(out, width, height);
+}
+
+/** If hair collapsed onto the skin gray, push it one step darker so the hairline shows. */
+export function separateHair(posted: ImageData, original: ImageData, kind: SkinKind): ImageData {
+  const band = skinPalette(kind);
+  const faceMedian = faceMedianLuminance(original);
+  const { width, height } = original;
+  const hair = sampleLuminance(
+    original,
+    Math.floor(width * 0.34),
+    Math.floor(height * 0.12),
+    Math.floor(width * 0.66),
+    Math.floor(height * 0.32)
+  );
+  if (hair.length < 8) return posted;
+  const hairMedian = hair[Math.floor(hair.length * 0.5)];
+  if (hairMedian > faceMedian - 16) return posted;
+  const out = new Uint8ClampedArray(posted.data);
+  const y0 = Math.floor(height * 0.08);
+  const y1 = Math.floor(height * 0.36);
+  const x0 = Math.floor(width * 0.28);
+  const x1 = Math.floor(width * 0.72);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const pixel = y * width + x;
+      if (!isOpaque(original.data, pixel)) continue;
+      if (opaqueLuminance(original.data, pixel) > faceMedian - 10) continue;
+      const tone = paletteIndexAt(out, pixel);
+      if (tone < 0 || tone < band.base) continue;
+      const next = Math.max(0, band.base - 1);
+      const color = PIXEL_PALETTE[next];
+      const i = pixel * 4;
+      out[i] = color.r;
+      out[i + 1] = color.g;
+      out[i + 2] = color.b;
+      out[i + 3] = 255;
+    }
+  }
+  return createImageData(out, width, height);
+}
+
+function paintProtected(source: ImageData, protect: Uint8Array): ImageData {
+  const out = new Uint8ClampedArray(source.data);
+  for (let pixel = 0; pixel < protect.length; pixel++) {
+    if (!protect[pixel]) continue;
+    const i = pixel * 4;
+    out[i] = OUTLINE_COLOR.r;
+    out[i + 1] = OUTLINE_COLOR.g;
+    out[i + 2] = OUTLINE_COLOR.b;
+    out[i + 3] = 255;
+  }
+  return createImageData(out, source.width, source.height);
+}
+
 export function renderPixelPortrait(
   source: ImageData,
   mode: PortraitProcessMode
@@ -1016,11 +1474,16 @@ export function renderPixelPortrait(
     prepared = posterize(downsampleNearest(keyPlainBackground(cleaned), PORTRAIT_GRID, PORTRAIT_GRID));
   } else {
     const framed = frameHeadAndShoulders(cleaned, FALLBACK_WORKING);
-    const contrasted = applyLocalContrast(framed);
-    const smoothed = smoothForDrawing(contrasted);
-    const lit = applyCelLight(smoothed);
-    const posted = posterizeFromForeground(lit);
-    prepared = mergeTinyRegions(downsampleNearest(posted, PORTRAIT_GRID, PORTRAIT_GRID), 6);
+    const features = detectDarkFeatures(framed);
+    const smoothed = smoothForDrawing(framed);
+    const posted = posterizeKeepingSkin(smoothed, features, framed);
+    const kind = classifySkin(faceMedianLuminance(framed));
+    const small = downsampleNearest(posted, PORTRAIT_GRID, PORTRAIT_GRID);
+    const originalSmall = downsampleNearest(framed, PORTRAIT_GRID, PORTRAIT_GRID);
+    const featureSmall = downsampleMask(features, framed.width, framed.height, PORTRAIT_GRID, PORTRAIT_GRID);
+    const separated = separateHair(small, originalSmall, kind);
+    const merged = mergeTinyRegions(separated, 6, featureSmall);
+    prepared = paintProtected(merged, featureSmall);
   }
   const outlined = applyOutlines(prepared);
   const grid = applyRim(outlined);

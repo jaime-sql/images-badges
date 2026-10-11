@@ -1,7 +1,7 @@
 /**
  * Event card, 640×960.
  * Top band: logo slot (max 64px) on the left, title and subtitle beside it.
- * Portrait panel: light gray, 2px #0F0F12 border, filling the space above the name.
+ * Portrait panel: light gray, 2px #6B6B73 border, filling the space above the name.
  * Name and role sit directly under the panel. Bottom band holds footer and number.
  */
 
@@ -17,6 +17,8 @@ const INK = '#F4F4F6';
 const MUTED = '#C5C5CE';
 const PANEL = '#E4E4E8';
 const BORDER = '#0F0F12';
+/** Lighter than the card so the portrait frame reads on #141418. */
+export const PANEL_BORDER_COLOR = '#6B6B73';
 const CARD = '#141418';
 const BAND = '#101014';
 
@@ -216,7 +218,7 @@ export async function renderEventCard(
   );
 
   const { panelX, panelY, panelW, panelH } = metrics;
-  ctx.fillStyle = BORDER;
+  ctx.fillStyle = PANEL_BORDER_COLOR;
   ctx.fillRect(panelX, panelY, panelW, panelH);
   ctx.fillStyle = PANEL;
   ctx.fillRect(

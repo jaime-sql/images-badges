@@ -5,6 +5,7 @@ import { fitCanvasText } from '../lib/text-fit.ts';
 import {
   EVENT_BADGE_HEIGHT,
   FALLBACK_LABEL_SIZE,
+  PANEL_BORDER_COLOR,
   demoTagBox,
   eventCardMetrics,
   PANEL_BORDER,
@@ -51,6 +52,7 @@ test('name and role sit on the footer band with a bordered portrait panel', () =
     assert.equal(metrics.panelW > 400, true);
     assert.equal(metrics.panelH > 400, true);
     assert.equal(PANEL_BORDER, 2);
+    assert.equal(PANEL_BORDER_COLOR, '#6B6B73');
     const roleGap = metrics.bottomBandY - metrics.roleBaseline;
     assert.ok(roleGap > 8 && roleGap < 40, `footer gap ${roleGap}`);
     assert.ok(metrics.nameY + 26 < metrics.roleBaseline);

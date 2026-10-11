@@ -18,6 +18,10 @@ import {
   frameHeadAndShoulders,
   mergeTinyRegions,
   cleanCutoutMask,
+  classifySkin,
+  skinPalette,
+  posterizeKeepingSkin,
+  faceMedianLuminance,
 } from '../lib/pixel-portrait.ts';
 import { createImageData } from '../lib/dither.ts';
 
@@ -228,6 +232,42 @@ test('head-and-shoulders crop puts the eyes near 40% from the top', () => {
   assert.equal(framed.data[3], 0);
 });
 
+test('a small head above a tall body is framed on the eyes, not the torso', () => {
+  const width = 80;
+  const height = 140;
+  const image = solid(width, height, 0, 0, 0, 0);
+  for (let y = 6; y < 36; y++) {
+    const inset = y < 12 ? 30 : 26;
+    for (let x = inset; x < width - inset; x++) setPixel(image, x, y, 176, 168, 160);
+  }
+  for (let y = 36; y < 130; y++) {
+    for (let x = 8; x < 72; x++) setPixel(image, x, y, 40, 40, 44);
+  }
+  for (let x = 32; x < 36; x++) setPixel(image, x, 18, 10, 10, 12);
+  for (let x = 44; x < 48; x++) setPixel(image, x, 18, 10, 10, 12);
+
+  const framed = frameHeadAndShoulders(image, 96);
+  let bestMin = 256;
+  let bestRow = 0;
+  const headLimit = Math.floor(framed.height * 0.6);
+  for (let y = 0; y < headLimit; y++) {
+    let min = 256;
+    let opaque = 0;
+    for (let x = 0; x < framed.width; x++) {
+      const i = (y * framed.width + x) * 4;
+      if (framed.data[i + 3] < 20) continue;
+      opaque += 1;
+      min = Math.min(min, framed.data[i]);
+    }
+    if (opaque > 0 && min < bestMin) {
+      bestMin = min;
+      bestRow = y;
+    }
+  }
+  const ratio = bestRow / framed.height;
+  assert.ok(ratio > 0.32 && ratio < 0.48, `eyes landed at ${ratio.toFixed(2)} of the frame`);
+});
+
 test('regions smaller than 6px merge into the neighboring gray', () => {
   const tone = PIXEL_PALETTE[3];
   const speck = PIXEL_PALETTE[0];
@@ -264,6 +304,79 @@ test('cut-out mask drops the stray line above the head', () => {
   const outlined = applyOutlines(posterize(cleaned));
   const line = (20 * 40 + 6) * 4;
   assert.equal(outlined.data[line + 3], 0);
+});
+
+test('a dark beard does not pull a lit face into the dark band', () => {
+  const image = solid(80, 80, 42, 40, 38);
+  for (let y = 34; y <= 38; y++) {
+    for (let x = 28; x <= 36; x++) setPixel(image, x, y, 190, 184, 176);
+    for (let x = 43; x <= 51; x++) setPixel(image, x, y, 190, 184, 176);
+  }
+  const tone = faceMedianLuminance(image);
+  assert.ok(tone >= 170, `lit face measured ${tone.toFixed(0)}`);
+  assert.equal(classifySkin(tone), 'light');
+});
+
+test('skin stays in its own band and a bright cheek does not turn white', () => {
+  assert.equal(classifySkin(70), 'dark');
+  assert.equal(classifySkin(110), 'dark');
+  assert.equal(classifySkin(150), 'medium');
+  assert.equal(classifySkin(190), 'light');
+  assert.deepEqual(
+    [skinPalette('dark').shadow, skinPalette('dark').base],
+    [1, 2]
+  );
+  assert.deepEqual(
+    [skinPalette('light').base, skinPalette('light').highlight],
+    [4, 5]
+  );
+
+  const image = solid(64, 64, 0, 0, 0, 0);
+  for (let y = 10; y < 54; y++) {
+    for (let x = 16; x < 48; x++) setPixel(image, x, y, 58, 50, 46);
+  }
+  for (let y = 24; y < 46; y++) {
+    for (let x = 16; x < 28; x++) setPixel(image, x, y, 36, 32, 30);
+  }
+  for (let y = 30; y < 36; y++) {
+    for (let x = 34; x < 40; x++) setPixel(image, x, y, 230, 230, 230);
+  }
+  const posted = posterizeKeepingSkin(image, new Uint8Array(64 * 64));
+  const tone = (x, y) => {
+    const i = (y * 64 + x) * 4;
+    return nearestPaletteIndex(posted.data[i], posted.data[i + 1], posted.data[i + 2]);
+  };
+  assert.ok(tone(40, 36) <= 2, `highlight became ${tone(40, 36)}`);
+  assert.ok(tone(22, 34) <= 2, `shadow became ${tone(22, 34)}`);
+  assert.ok(tone(40, 36) >= 1 && tone(22, 34) >= 1);
+});
+
+test('protected dark features smaller than 6px are not merged away', () => {
+  const tone = PIXEL_PALETTE[4];
+  const ink = PIXEL_PALETTE[0];
+  const image = solid(16, 16, tone.r, tone.g, tone.b);
+  setPixel(image, 8, 8, ink.r, ink.g, ink.b);
+  setPixel(image, 9, 8, ink.r, ink.g, ink.b);
+  const protect = new Uint8Array(16 * 16);
+  protect[8 * 16 + 8] = 1;
+  protect[8 * 16 + 9] = 1;
+  const merged = mergeTinyRegions(image, 6, protect);
+  const i = (8 * 16 + 8) * 4;
+  assert.equal(merged.data[i], ink.r);
+  assert.equal(merged.data[i + 1], ink.g);
+});
+
+test('floating specks that do not touch the person are dropped', () => {
+  const image = solid(48, 48, 0, 0, 0, 0);
+  for (let y = 12; y < 36; y++) {
+    for (let x = 14; x < 34; x++) setPixel(image, x, y, 160, 150, 140);
+  }
+  for (let y = 2; y < 7; y++) {
+    for (let x = 2; x < 7; x++) setPixel(image, x, y, 200, 200, 200);
+  }
+  const cleaned = cleanCutoutMask(image);
+  assert.equal(cleaned.data[(4 * 48 + 4) * 4 + 3], 0);
+  assert.equal(cleaned.data[(24 * 48 + 24) * 4 + 3], 255);
 });
 
 test('downsample nearest keeps a flat field', () => {
