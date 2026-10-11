@@ -12,7 +12,13 @@ import {
   roundHalfEven,
 } from '../lib/pixel-sprite.ts';
 import { createImageData } from '../lib/dither.ts';
-import { parseFontCmap, shapePixelText } from '../lib/pixel-font.ts';
+import {
+  capsNeedingSynthesis,
+  configurePixelFont,
+  parseFontCmap,
+  pixelFontHasGlyph,
+  shapePixelText,
+} from '../lib/pixel-font.ts';
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'assertion failed');
@@ -112,11 +118,32 @@ assert(native.map((g) => g.char).join('') === 'GARCÍA', 'native string is intac
 console.log('✓ Accent fallback passed');
 
 const font = readFileSync(new URL('../public/fonts/PressStart2P-Regular.ttf', import.meta.url));
-const cmap = parseFontCmap(font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength));
-for (const ch of ['á', 'é', 'í', 'ó', 'ú', 'ñ', 'ü', 'Á', 'É', 'Í', 'Ó', 'Ú', 'Ñ', 'Ü']) {
+const fontBuffer = font.buffer.slice(font.byteOffset, font.byteOffset + font.byteLength);
+const cmap = parseFontCmap(fontBuffer);
+for (const ch of ['á', 'é', 'í', 'ó', 'ú', 'ñ', 'ü']) {
   assert(cmap.has(ch.codePointAt(0)), `Press Start 2P is missing ${ch}`);
 }
-console.log('✓ Vendored Press Start 2P includes Spanish accents');
+const needsCap = capsNeedingSynthesis(fontBuffer);
+for (const ch of ['Á', 'É', 'Í', 'Ó', 'Ú', 'Ñ', 'Ü']) {
+  assert(needsCap.has(ch.codePointAt(0)), `${ch} should be drawn as a full-height capital plus a mark`);
+}
+for (const ch of ['á', 'é', 'í', 'ó', 'ú', 'ñ', 'ü']) {
+  assert(!needsCap.has(ch.codePointAt(0)), `${ch} is a real lowercase glyph and should stay`);
+}
+configurePixelFont(fontBuffer);
+assert(pixelFontHasGlyph('Í'.codePointAt(0)) === false, 'Í is not drawn from the squashed glyph');
+assert(pixelFontHasGlyph('Ñ'.codePointAt(0)) === false, 'Ñ is not drawn from the squashed glyph');
+assert(pixelFontHasGlyph('I'.codePointAt(0)) === true, 'plain I stays a font glyph');
+assert(pixelFontHasGlyph('á'.codePointAt(0)) === true, 'lowercase á stays a font glyph');
+const garcia = shapePixelText('GARCÍA', pixelFontHasGlyph);
+const garciaI = garcia.find((g) => g.source === 'Í');
+assert(garciaI && garciaI.char === 'I' && garciaI.accent === 'acute', `GARCÍA Í ${JSON.stringify(garciaI)}`);
+assert(garcia.filter((g) => g.source !== 'Í').every((g) => !g.accent), 'other García letters stay plain');
+const nunez = shapePixelText('NUÑEZ', pixelFontHasGlyph);
+const nunezN = nunez.find((g) => g.source === 'Ñ');
+assert(nunezN && nunezN.char === 'N' && nunezN.accent === 'tilde', `NUÑEZ Ñ ${JSON.stringify(nunezN)}`);
+assert(nunez.map((g) => g.char).join('') === 'NUNEZ', 'NUÑEZ bases');
+console.log('✓ GARCÍA and NUÑEZ use full-height capitals');
 
 // Corners sampled from the 640×960 reference. Canvas arcTo antialiases these.
 const outer = (x, y) => pixelRoundedContains(x, y, 0, 0, 640, 960, 32);

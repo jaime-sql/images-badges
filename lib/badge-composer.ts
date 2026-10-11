@@ -277,18 +277,16 @@ export async function renderBadgeToCanvas(
     ctx.stroke();
   }
 
-  ctx.strokeStyle = theme.border;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(portraitX, portraitY, portraitSize, portraitSize);
-
-  // Draw Corner Crosshair Brackets
-  drawCornerBrackets(ctx, portraitX, portraitY, portraitSize, portraitSize, 16);
-
-  // Render Dithered Portrait Pixel-Perfect!
+  // Render the dithered portrait inside the frame, then stroke the frame
+  // on top so shoulders cannot paint over the border or the caption.
   if (ditheredPortrait) {
-    // CRITICAL: Disable antialiasing so scaled pixels remain razor-sharp retro blocks
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(portraitX + 2, portraitY + 2, portraitSize - 4, portraitSize - 4);
+    ctx.clip();
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(ditheredPortrait, portraitX, portraitY, portraitSize, portraitSize);
+    ctx.restore();
   } else {
     // Placeholder retro silhouette
     ctx.fillStyle = theme.muted;
@@ -299,14 +297,20 @@ export async function renderBadgeToCanvas(
     ctx.fillText('UPLOAD FILE OR WEBCAM', BADGE_WIDTH / 2, portraitY + portraitSize / 2 + 15);
     ctx.textAlign = 'left';
   }
+
+  ctx.strokeStyle = theme.border;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(portraitX, portraitY, portraitSize, portraitSize);
+  drawCornerBrackets(ctx, portraitX, portraitY, portraitSize, portraitSize, 16);
   ctx.restore();
 
-  // Portrait Metadata Tag
+  // Portrait metadata sits below the frame, clear of the photo.
   ctx.save();
   ctx.fillStyle = theme.muted;
   ctx.font = '10px "Geist Mono", monospace';
+  ctx.textBaseline = 'top';
   const algoTag = `RES: ${dither.resolution}x${dither.resolution} // ALGO: ${dither.algorithm.toUpperCase()} // 4-LVL`;
-  ctx.fillText(algoTag, portraitX, portraitY + portraitSize + 20);
+  ctx.fillText(algoTag, portraitX, portraitY + portraitSize + 10);
   ctx.restore();
 
   // 7. Participant Primary Details
@@ -404,7 +408,13 @@ export async function renderBadgeToCanvas(
   ctx.font = '9px "Geist Mono", monospace';
   ctx.fillText('PIXEL BADGE ENGINE // CLIENT-SIDE DITHERING ACTIVE', 40, BADGE_HEIGHT - 32);
   ctx.textAlign = 'right';
-  ctx.fillText('STATUS: ONLINE 🟢', BADGE_WIDTH - 40, BADGE_HEIGHT - 32);
+  const statusRight = BADGE_WIDTH - 40;
+  const statusDot = 3;
+  ctx.fillText('STATUS: ONLINE', statusRight - statusDot * 2 - 6, BADGE_HEIGHT - 32);
+  ctx.fillStyle = theme.accent;
+  ctx.beginPath();
+  ctx.arc(statusRight - statusDot, BADGE_HEIGHT - 35, statusDot, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
